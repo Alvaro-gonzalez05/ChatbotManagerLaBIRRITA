@@ -1,0 +1,11 @@
+# Demo Images Directory
+
+This directory will contain uploaded promotion images.
+
+Supported formats:
+- JPG/JPEG
+- PNG
+
+Max file size: 5MB
+
+Images are automatically resized and optimized for web use.
