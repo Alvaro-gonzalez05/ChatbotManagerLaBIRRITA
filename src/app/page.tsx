@@ -15,8 +15,8 @@ export default function Home() {
       if (session) {
         router.push('/dashboard')
       } else {
-        // Check if this is the first time setup
-        router.push('/auth/register')
+        // Redirect to login page
+        router.push('/auth/login')
       }
     }
 
