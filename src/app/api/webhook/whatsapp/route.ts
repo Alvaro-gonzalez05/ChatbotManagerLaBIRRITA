@@ -1,13 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { BotService } from '@/services/botService'
-import { EvolutionApiService, WhatsAppMessage } from '@/services/evolutionApi'
-import { WhatsAppBusinessApiService, WhatsAppWebhookMessage } from '@/services/whatsappBusinessApi'
-import { AIService } from '@/services/aiService'
+import { WhatsAppService, WhatsAppWebhook } from '@/services/whatsappService'
+import { createClient } from '@/lib/supabase'
 
 const botService = new BotService()
-const evolutionApi = new EvolutionApiService()
-const whatsappBusinessApi = new WhatsAppBusinessApiService()
-const aiService = new AIService()
+const whatsappService = new WhatsAppService()
 
 // WhatsApp Business API webhook verification
 export async function GET(request: NextRequest) {
@@ -16,170 +13,113 @@ export async function GET(request: NextRequest) {
   const token = searchParams.get('hub.verify_token')
   const challenge = searchParams.get('hub.challenge')
 
-  const verificationResult = whatsappBusinessApi.verifyWebhook(
-    mode as string, 
-    token as string, 
-    challenge as string
-  )
-
-  if (verificationResult) {
-    return new NextResponse(verificationResult, { status: 200 })
-  } else {
-    return new NextResponse('Verification failed', { status: 403 })
+  if (mode && token && challenge) {
+    const verifiedChallenge = whatsappService.verifyWebhook(mode, token, challenge)
+    
+    if (verifiedChallenge) {
+      console.log('Webhook verified successfully')
+      return new NextResponse(verifiedChallenge)
+    } else {
+      console.error('Webhook verification failed')
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    }
   }
+  
+  return NextResponse.json({ status: 'WhatsApp webhook endpoint active' })
 }
 
-// WhatsApp webhook to receive messages (supports both APIs)
+// WhatsApp Business API webhook to receive messages
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json()
-    console.log('Received webhook:', JSON.stringify(body, null, 2))
-    
-    // Check if it's WhatsApp Business API format
-    if (body.object === 'whatsapp_business_account') {
-      await handleWhatsAppBusinessWebhook(body)
-      return NextResponse.json({ status: 'success' })
-    }
+    const webhookData: WhatsAppWebhook = await request.json()
+    console.log('Received WhatsApp webhook:', JSON.stringify(webhookData, null, 2))
 
-    // Handle Evolution API format
-    const { event, instance, data } = body
-    switch (event) {
-      case 'QRCODE_UPDATED':
-        console.log(`QR Code updated for instance ${instance.instanceName}`)
-        break
+    // Procesar mensajes del webhook
+    const messages = whatsappService.processWebhook(webhookData)
 
-      case 'CONNECTION_UPDATE':
-        console.log(`Connection update for instance ${instance.instanceName}:`, data.state)
-        break
+    for (const { phoneNumberId, message, customerName } of messages) {
+      // Solo procesar mensajes de clientes (no enviados por el bot)
+      if (whatsappService.isFromCustomer(message)) {
+        const messageText = whatsappService.extractMessageText(message)
+        const customerNumber = whatsappService.getCustomerNumber(message)
 
-      case 'MESSAGES_UPSERT':
-        if (data && data.length > 0) {
-          for (const messageData of data) {
-            await handleIncomingMessage(instance.instanceName, messageData)
-          }
-        }
-        break
+        console.log(`Processing message from ${customerNumber}: "${messageText}"`)
 
-      case 'APPLICATION_STARTUP':
-        console.log(`Application started for instance ${instance.instanceName}`)
-        break
-
-      default:
-        console.log(`Unhandled event: ${event}`)
-    }
-
-    return NextResponse.json({ status: 'success' })
-  } catch (error: any) {
-    console.error('Webhook error:', error)
-    return NextResponse.json({ status: 'error', message: error.message })
-  }
-}
-
-async function handleWhatsAppBusinessWebhook(body: WhatsAppWebhookMessage) {
-  try {
-    const messageData = whatsappBusinessApi.processWebhookMessage(body)
-    
-    if (!messageData) {
-      console.log('No message data to process')
-      return
-    }
-
-    const { from, text, messageId } = messageData
-    
-    if (!text.trim()) {
-      return // Skip empty messages
-    }
-
-    console.log(`Processing WhatsApp Business API message from ${from}: ${text}`)
-
-    // Mark message as read
-    await whatsappBusinessApi.markMessageAsRead(messageId)
-
-    // Extract business ID from phone number context
-    const businessId = await getBusinessIdFromContext(from)
-    
-    if (!businessId) {
-      console.log(`No business ID found for number ${from}`)
-      return
-    }
-
-    // Process with AI service (includes delay)
-    const result = await aiService.processMessage(from, text, businessId)
-    
-    if (result.response) {
-      try {
-        await whatsappBusinessApi.sendMessage(from, result.response)
-        console.log(`Sent AI response to ${from}: ${result.response}`)
-      } catch (error: any) {
-        console.error('Error sending response:', error)
-      }
-    }
-  } catch (error: any) {
-    console.error('Error handling WhatsApp Business webhook:', error)
-  }
-}
-
-async function handleIncomingMessage(instanceName: string, messageData: WhatsAppMessage) {
-  try {
-    // Only process messages from customers (not from us)
-    if (!evolutionApi.isFromCustomer(messageData)) {
-      return
-    }
-
-    const messageText = evolutionApi.extractMessageText(messageData)
-    if (!messageText.trim()) {
-      return // Skip empty messages
-    }
-
-    const customerNumber = evolutionApi.getCustomerNumber(messageData)
-    
-    console.log(`Processing Evolution API message from ${customerNumber}: ${messageText}`)
-
-    // Extract business ID from instance name
-    const businessId = extractBusinessIdFromInstance(instanceName)
-    
-    if (businessId) {
-      // Use AI service for intelligent responses
-      const result = await aiService.processMessage(customerNumber, messageText, businessId)
-      
-      if (result.response) {
-        try {
-          await botService.sendMessage(instanceName, customerNumber, result.response)
-          console.log(`Sent AI response to ${customerNumber}: ${result.response}`)
-        } catch (error: any) {
-          console.error('Error sending response:', error)
-        }
-      }
-    } else {
-      // Fallback to simple bot service
-      const response = await botService.processMessage(instanceName, customerNumber, messageText)
-      
-      if (response) {
-        setTimeout(async () => {
+        if (messageText.trim()) {
           try {
-            await botService.sendMessage(instanceName, customerNumber, response)
-            console.log(`Sent response to ${customerNumber}: ${response}`)
-          } catch (error: any) {
-            console.error('Error sending response:', error)
+            // Intentar encontrar la configuración de WhatsApp y el business asociado
+            let businessId = null
+            try {
+              const supabase = createClient()
+              const { data: config, error } = await supabase
+                .from('whatsapp_configurations')
+                .select('business_id')
+                .eq('phone_number_id', phoneNumberId)
+                .single()
+
+              if (!error && config) {
+                businessId = config.business_id
+              }
+            } catch (dbError) {
+              console.warn('Database access failed for webhook:', dbError)
+            }
+
+            // Si no se encuentra en la DB, usar el businessId por defecto
+            if (!businessId) {
+              const defaultPhoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID || '793528520499781'
+              if (phoneNumberId === defaultPhoneNumberId) {
+                businessId = 'f2a24619-5016-490c-9dc9-dd08fd6549b3' // Business ID por defecto
+              } else {
+                console.warn('Could not find business for phone number ID:', phoneNumberId)
+                continue
+              }
+            }
+
+            // Marcar mensaje como leído
+            await whatsappService.markAsRead(phoneNumberId, message.id)
+
+            // Generar respuesta del bot
+            const botResponse = await botService.processMessage(
+              messageText,
+              customerNumber,
+              businessId,
+              customerName || 'Cliente'
+            )
+
+            console.log(`Bot response: "${botResponse}"`)
+
+            // Enviar respuesta
+            if (botResponse && botResponse.trim()) {
+              await whatsappService.sendTextMessage(phoneNumberId, customerNumber, botResponse)
+              console.log(`Response sent to ${customerNumber}`)
+            }
+
+          } catch (error) {
+            console.error('Error processing message:', error)
+            
+            // Enviar mensaje de error
+            try {
+              await whatsappService.sendTextMessage(
+                phoneNumberId,
+                customerNumber,
+                'Disculpa, hubo un error procesando tu mensaje. Por favor intenta nuevamente.'
+              )
+            } catch (fallbackError) {
+              console.error('Error sending fallback message:', fallbackError)
+            }
           }
-        }, 1000)
+        }
       }
     }
-  } catch (error: any) {
-    console.error('Error handling incoming message:', error)
+
+    return NextResponse.json({ success: true })
+
+  } catch (error) {
+    console.error('Webhook error:', error)
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    )
   }
 }
 
-function extractBusinessIdFromInstance(instanceName: string): string | null {
-  const match = instanceName.match(/business-(.+)-bot/)
-  return match?.[1] ?? null
-}
-
-async function getBusinessIdFromContext(_phoneNumber: string): Promise<string | null> {
-  // For now, return a default business ID
-  // In production, you might want to:
-  // 1. Check which business owns the WhatsApp number being contacted
-  // 2. Look up business based on webhook endpoint
-  // 3. Use a mapping table
-  return '1' // Default to business ID 1 for testing
-}

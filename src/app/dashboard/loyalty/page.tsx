@@ -30,7 +30,8 @@ import {
   DollarSign,
   Settings,
   Zap,
-  MessageCircle
+  MessageCircle,
+  Menu
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Switch } from '@/components/ui/switch'
@@ -72,6 +73,21 @@ interface LoyaltySettings {
   vip_levels: VipLevel[]
 }
 
+interface RedeemableItem {
+  id: string
+  business_id: string
+  name: string
+  description: string | null
+  points_required: number
+  category: string | null
+  image_url: string | null
+  is_available: boolean
+  stock: number | null
+  terms_conditions: string | null
+  created_at: string
+  updated_at: string
+}
+
 interface Automation {
   id: string
   name: string
@@ -84,6 +100,7 @@ interface Automation {
   frequency_type: string
   max_sends_per_customer: number
   missing_field_type?: string
+  target_audience?: string
   created_at: string
 }
 
@@ -97,6 +114,9 @@ interface Promotion {
   points_reward?: number
   promotion_type: string
   flyer_image_url?: string
+  valid_from?: string
+  valid_until?: string
+  is_active?: boolean
 }
 
 function LoyaltyPageContent() {
@@ -106,6 +126,7 @@ function LoyaltyPageContent() {
   const [loyaltySettings, setLoyaltySettings] = useState<LoyaltySettings | null>(null)
   const [automations, setAutomations] = useState<Automation[]>([])
   const [promotions, setPromotions] = useState<Promotion[]>([])
+  const [redeemableItems, setRedeemableItems] = useState<RedeemableItem[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   
@@ -117,6 +138,22 @@ function LoyaltyPageContent() {
   // Promotion form states
   const [showPromotionForm, setShowPromotionForm] = useState(false)
   const [editingPromotion, setEditingPromotion] = useState<Promotion | null>(null)
+
+  // Redeemable items form states
+  const [editingRedeemableItem, setEditingRedeemableItem] = useState<RedeemableItem | null>(null)
+  const [newRedeemableItem, setNewRedeemableItem] = useState<Partial<RedeemableItem>>({
+    name: '',
+    description: '',
+    points_required: 0,
+    category: '',
+    is_available: true,
+    stock: null,
+    terms_conditions: ''
+  })
+  
+  // Modal state for mobile tabs
+  const [showMobileTabsModal, setShowMobileTabsModal] = useState(false)
+  const [currentTab, setCurrentTab] = useState("ranges")
   
   // Form states
   const [newRange, setNewRange] = useState<PurchaseRange>({ min: 0, max: null, points: 0 })
@@ -136,6 +173,7 @@ function LoyaltyPageContent() {
       loadLoyaltySettings()
       loadAutomations()
       loadPromotions()
+      loadRedeemableItems()
     }
   }, [business?.id])
 
@@ -237,6 +275,23 @@ function LoyaltyPageContent() {
       setPromotions(promotionsWithImages)
     } catch (error: any) {
       toast.error('Error al cargar promociones: ' + error.message)
+    }
+  }
+
+  const loadRedeemableItems = async () => {
+    if (!business?.id) return
+    
+    try {
+      const { data, error } = await supabase
+        .from('redeemable_items')
+        .select('*')
+        .eq('business_id', business.id)
+        .order('points_required', { ascending: true })
+
+      if (error) throw error
+      setRedeemableItems(data || [])
+    } catch (error: any) {
+      toast.error('Error al cargar productos canjeables: ' + error.message)
     }
   }
 
@@ -386,6 +441,152 @@ function LoyaltyPageContent() {
     })
   }
 
+  // Functions for redeemable items management
+  const addRedeemableItem = async () => {
+    if (!business?.id || !newRedeemableItem.name || !newRedeemableItem.points_required) {
+      toast.error('Completa el nombre y los puntos requeridos')
+      return
+    }
+
+    try {
+      const { error } = await supabase
+        .from('redeemable_items')
+        .insert({
+          business_id: business.id,
+          name: newRedeemableItem.name,
+          description: newRedeemableItem.description || null,
+          points_required: newRedeemableItem.points_required,
+          category: newRedeemableItem.category || null,
+          is_available: newRedeemableItem.is_available ?? true,
+          stock: newRedeemableItem.stock,
+          terms_conditions: newRedeemableItem.terms_conditions || null
+        })
+
+      if (error) throw error
+
+      toast.success('Producto canjeable agregado correctamente')
+      setNewRedeemableItem({
+        name: '',
+        description: '',
+        points_required: 0,
+        category: '',
+        is_available: true,
+        stock: null,
+        terms_conditions: ''
+      })
+      loadRedeemableItems()
+    } catch (error: any) {
+      toast.error('Error al agregar producto: ' + error.message)
+    }
+  }
+
+  const updateRedeemableItem = async (item: RedeemableItem, updates: Partial<RedeemableItem>) => {
+    try {
+      const { error } = await supabase
+        .from('redeemable_items')
+        .update({
+          ...updates,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', item.id)
+
+      if (error) throw error
+
+      toast.success('Producto actualizado correctamente')
+      loadRedeemableItems()
+    } catch (error: any) {
+      toast.error('Error al actualizar producto: ' + error.message)
+    }
+  }
+
+  const deleteRedeemableItem = async (item: RedeemableItem) => {
+    // Create elegant confirmation toast with Sonner
+    toast(
+      <div className="flex flex-col gap-3">
+        <div className="flex items-start gap-3">
+          <div className="flex-shrink-0 w-10 h-10 bg-red-100 rounded-full flex items-center justify-center">
+            <Trash2 className="w-5 h-5 text-red-600" />
+          </div>
+          <div className="flex-1">
+            <h3 className="font-semibold text-gray-900">
+              ¿Eliminar producto canjeable?
+            </h3>
+            <p className="text-sm text-gray-600 mt-1">
+              Se eliminará permanentemente <span className="font-medium">"{item.name}"</span>. 
+              Esta acción no se puede deshacer.
+            </p>
+          </div>
+        </div>
+        <div className="flex gap-2 ml-13">
+          <button
+            onClick={() => {
+              toast.dismiss()
+              performDeleteItem(item)
+            }}
+            className="px-3 py-1.5 bg-red-600 text-white text-sm font-medium rounded-md hover:bg-red-700 transition-colors"
+          >
+            Eliminar
+          </button>
+          <button
+            onClick={() => toast.dismiss()}
+            className="px-3 py-1.5 bg-gray-200 text-gray-800 text-sm font-medium rounded-md hover:bg-gray-300 transition-colors"
+          >
+            Cancelar
+          </button>
+        </div>
+      </div>,
+      {
+        duration: Infinity, // Don't auto-dismiss
+        position: 'top-center',
+        className: 'w-96',
+      }
+    )
+  }
+
+  const performDeleteItem = async (item: RedeemableItem) => {
+    try {
+      const { error } = await supabase
+        .from('redeemable_items')
+        .delete()
+        .eq('id', item.id)
+
+      if (error) throw error
+
+      toast.success(
+        <div className="flex items-center gap-2">
+          <div className="w-6 h-6 bg-green-100 rounded-full flex items-center justify-center">
+            <svg className="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+            </svg>
+          </div>
+          <span>Producto eliminado correctamente</span>
+        </div>,
+        {
+          duration: 4000,
+        }
+      )
+      loadRedeemableItems()
+    } catch (error: any) {
+      toast.error(
+        <div className="flex items-center gap-2">
+          <div className="w-6 h-6 bg-red-100 rounded-full flex items-center justify-center">
+            <svg className="w-4 h-4 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </div>
+          <span>Error al eliminar producto: {error.message}</span>
+        </div>,
+        {
+          duration: 5000,
+        }
+      )
+    }
+  }
+
+  const toggleItemAvailability = async (item: RedeemableItem) => {
+    await updateRedeemableItem(item, { is_available: !item.is_available })
+  }
+
   const formatCurrency = (amount: number) => {
     return new Intl.NumberFormat('es-AR', { 
       style: 'currency', 
@@ -454,9 +655,30 @@ function LoyaltyPageContent() {
       </div>
 
       {loyaltySettings && (
-        <Tabs defaultValue="ranges" className="space-y-6">
-          <TabsList className="grid w-full grid-cols-5">
+        <Tabs value={currentTab} onValueChange={setCurrentTab} className="space-y-6">
+          {/* Mobile tab selector button */}
+          <div className="block sm:hidden">
+            <Button
+              variant="outline"
+              onClick={() => setShowMobileTabsModal(true)}
+              className="w-full flex items-center justify-between"
+            >
+              <span>
+                {currentTab === "ranges" && "Rangos de Compra"}
+                {currentTab === "rewards" && "Productos Canjeables"}
+                {currentTab === "events" && "Eventos Especiales"}
+                {currentTab === "vip" && "Niveles VIP"}
+                {currentTab === "automations" && "Automatizaciones"}
+                {currentTab === "general" && "Configuración General"}
+              </span>
+              <Menu className="h-4 w-4" />
+            </Button>
+          </div>
+
+          {/* Desktop tabs - hidden on mobile */}
+          <TabsList className="hidden sm:grid w-full sm:grid-cols-3 lg:grid-cols-6 gap-1">
             <TabsTrigger value="ranges">Rangos de Compra</TabsTrigger>
+            <TabsTrigger value="rewards">Productos Canjeables</TabsTrigger>
             <TabsTrigger value="events">Eventos Especiales</TabsTrigger>
             <TabsTrigger value="vip">Niveles VIP</TabsTrigger>
             <TabsTrigger value="automations">Automatizaciones</TabsTrigger>
@@ -547,6 +769,196 @@ function LoyaltyPageContent() {
                       ))}
                     </TableBody>
                   </Table>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Redeemable Items Tab */}
+          <TabsContent value="rewards" className="space-y-6">
+            <Card className="animate-slide-up">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Gift className="h-5 w-5 text-primary" />
+                  Productos Canjeables
+                </CardTitle>
+                <CardDescription>
+                  Configure los productos y servicios que los clientes pueden canjear con sus puntos
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                {/* Add new redeemable item form */}
+                <div className="p-4 border rounded-lg space-y-4">
+                  <h3 className="font-semibold">Agregar Nuevo Producto Canjeable</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label>Nombre del Producto *</Label>
+                      <Input
+                        value={newRedeemableItem.name || ''}
+                        onChange={(e) => setNewRedeemableItem({...newRedeemableItem, name: e.target.value})}
+                        placeholder="Cerveza Artesanal"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Puntos Requeridos *</Label>
+                      <Input
+                        type="number"
+                        value={newRedeemableItem.points_required || ''}
+                        onChange={(e) => setNewRedeemableItem({...newRedeemableItem, points_required: parseInt(e.target.value) || 0})}
+                        placeholder="150"
+                      />
+                    </div>
+                  </div>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label>Categoría</Label>
+                      <Select 
+                        value={newRedeemableItem.category || ''} 
+                        onValueChange={(value) => setNewRedeemableItem({...newRedeemableItem, category: value})}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Selecciona una categoría" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="bebidas">🍻 Bebidas</SelectItem>
+                          <SelectItem value="comida">🍽️ Comida</SelectItem>
+                          <SelectItem value="postres">🍰 Postres</SelectItem>
+                          <SelectItem value="descuentos">💰 Descuentos</SelectItem>
+                          <SelectItem value="experiencias">🎉 Experiencias</SelectItem>
+                          <SelectItem value="productos">🎁 Productos</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Stock (opcional)</Label>
+                      <Input
+                        type="number"
+                        value={newRedeemableItem.stock || ''}
+                        onChange={(e) => setNewRedeemableItem({...newRedeemableItem, stock: e.target.value ? parseInt(e.target.value) : null})}
+                        placeholder="Sin límite"
+                      />
+                    </div>
+                  </div>
+                  
+                  <div className="space-y-2">
+                    <Label>Descripción</Label>
+                    <Textarea
+                      value={newRedeemableItem.description || ''}
+                      onChange={(e) => setNewRedeemableItem({...newRedeemableItem, description: e.target.value})}
+                      placeholder="Describe el producto o servicio que se puede canjear"
+                      rows={2}
+                    />
+                  </div>
+                  
+                  <div className="space-y-2">
+                    <Label>Términos y Condiciones (opcional)</Label>
+                    <Textarea
+                      value={newRedeemableItem.terms_conditions || ''}
+                      onChange={(e) => setNewRedeemableItem({...newRedeemableItem, terms_conditions: e.target.value})}
+                      placeholder="Ej: Válido por 30 días, no acumulable con otras promociones"
+                      rows={2}
+                    />
+                  </div>
+                  
+                  <div className="flex items-center space-x-2">
+                    <Switch
+                      checked={newRedeemableItem.is_available ?? true}
+                      onCheckedChange={(checked) => setNewRedeemableItem({...newRedeemableItem, is_available: checked})}
+                    />
+                    <Label>Disponible para canje</Label>
+                  </div>
+                  
+                  <Button onClick={addRedeemableItem} className="w-full">
+                    <Plus className="mr-2 h-4 w-4" />
+                    Agregar Producto Canjeable
+                  </Button>
+                </div>
+
+                {/* Existing redeemable items */}
+                <div className="space-y-4">
+                  <h3 className="font-semibold">Productos Configurados ({redeemableItems.length})</h3>
+                  
+                  {redeemableItems.length === 0 ? (
+                    <div className="text-center py-8 text-muted-foreground">
+                      <Gift className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
+                      <p>No hay productos canjeables configurados</p>
+                      <p className="text-sm">Agrega productos para que los clientes puedan canjear sus puntos</p>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                      {redeemableItems.map((item) => (
+                        <Card key={item.id} className="animate-scale-hover">
+                          <CardHeader className="pb-2">
+                            <div className="flex items-center justify-between">
+                              <CardTitle className="text-lg">{item.name}</CardTitle>
+                              <Badge variant={item.is_available ? 'default' : 'secondary'}>
+                                {item.is_available ? 'Disponible' : 'No disponible'}
+                              </Badge>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Badge variant="outline" className="text-primary font-semibold">
+                                {item.points_required} pts
+                              </Badge>
+                              {item.category && (
+                                <Badge variant="secondary" className="text-xs">
+                                  {item.category}
+                                </Badge>
+                              )}
+                            </div>
+                          </CardHeader>
+                          <CardContent className="space-y-3">
+                            {item.description && (
+                              <p className="text-sm text-muted-foreground">
+                                {item.description}
+                              </p>
+                            )}
+                            
+                            {item.stock !== null && (
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs text-muted-foreground">Stock:</span>
+                                <Badge variant={item.stock > 10 ? 'secondary' : item.stock > 0 ? 'outline' : 'destructive'}>
+                                  {item.stock} unidades
+                                </Badge>
+                              </div>
+                            )}
+                            
+                            {item.terms_conditions && (
+                              <details className="text-xs">
+                                <summary className="cursor-pointer text-muted-foreground">Términos y condiciones</summary>
+                                <p className="mt-2 text-muted-foreground">{item.terms_conditions}</p>
+                              </details>
+                            )}
+                            
+                            <div className="flex items-center justify-between pt-2">
+                              <Switch
+                                checked={item.is_available}
+                                onCheckedChange={() => toggleItemAvailability(item)}
+                              />
+                              <div className="flex items-center gap-1">
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => setEditingRedeemableItem(item)}
+                                  className="h-8 w-8 p-0"
+                                >
+                                  <Edit className="h-4 w-4" />
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => deleteRedeemableItem(item)}
+                                  className="h-8 w-8 p-0 text-destructive hover:text-destructive"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              </div>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </CardContent>
             </Card>
@@ -923,7 +1335,6 @@ function LoyaltyPageContent() {
                                   <Switch
                                     checked={automation.is_active}
                                     onCheckedChange={() => toggleAutomation(automation.id, automation.is_active)}
-                                    size="sm"
                                   />
                                   <Button
                                     variant="ghost"
@@ -1197,6 +1608,83 @@ function LoyaltyPageContent() {
           </TabsContent>
         </Tabs>
       )}
+
+      {/* Mobile Tabs Modal */}
+      <Dialog open={showMobileTabsModal} onOpenChange={setShowMobileTabsModal}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Seleccionar Sección</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-2 py-4">
+            <Button
+              variant={currentTab === "ranges" ? "default" : "ghost"}
+              onClick={() => {
+                setCurrentTab("ranges")
+                setShowMobileTabsModal(false)
+              }}
+              className="justify-start"
+            >
+              <DollarSign className="mr-2 h-4 w-4" />
+              Rangos de Compra
+            </Button>
+            <Button
+              variant={currentTab === "rewards" ? "default" : "ghost"}
+              onClick={() => {
+                setCurrentTab("rewards")
+                setShowMobileTabsModal(false)
+              }}
+              className="justify-start"
+            >
+              <Gift className="mr-2 h-4 w-4" />
+              Productos Canjeables
+            </Button>
+            <Button
+              variant={currentTab === "events" ? "default" : "ghost"}
+              onClick={() => {
+                setCurrentTab("events")
+                setShowMobileTabsModal(false)
+              }}
+              className="justify-start"
+            >
+              <Calendar className="mr-2 h-4 w-4" />
+              Eventos Especiales
+            </Button>
+            <Button
+              variant={currentTab === "vip" ? "default" : "ghost"}
+              onClick={() => {
+                setCurrentTab("vip")
+                setShowMobileTabsModal(false)
+              }}
+              className="justify-start"
+            >
+              <Star className="mr-2 h-4 w-4" />
+              Niveles VIP
+            </Button>
+            <Button
+              variant={currentTab === "automations" ? "default" : "ghost"}
+              onClick={() => {
+                setCurrentTab("automations")
+                setShowMobileTabsModal(false)
+              }}
+              className="justify-start"
+            >
+              <Zap className="mr-2 h-4 w-4" />
+              Automatizaciones
+            </Button>
+            <Button
+              variant={currentTab === "general" ? "default" : "ghost"}
+              onClick={() => {
+                setCurrentTab("general")
+                setShowMobileTabsModal(false)
+              }}
+              className="justify-start"
+            >
+              <Settings className="mr-2 h-4 w-4" />
+              Configuración General
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
@@ -1730,7 +2218,7 @@ function PromotionForm({ promotion, onSave, onCancel }: PromotionFormProps) {
         business_id: business.id,
         discount_percentage: formData.discount_percentage || null,
         points_reward: formData.points_reward || null,
-        flyer_image_url: imageUrl || null,
+        flyer_image_url: imageUrl,
         flyer_image_data: imageData,
         flyer_image_type: imageType,
         flyer_image_size: imageSize

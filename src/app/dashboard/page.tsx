@@ -9,6 +9,13 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
 import { 
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { 
   Calendar, 
   Users, 
   MessageCircle, 
@@ -18,7 +25,10 @@ import {
   Wifi,
   WifiOff,
   Search,
-  Plus
+  Plus,
+  Gift,
+  ShoppingCart,
+  Minus
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Customer } from '@/types/database'
@@ -31,8 +41,23 @@ interface DashboardStats {
   dailyRevenue: number
 }
 
+interface RedeemableItem {
+  id: string
+  business_id: string
+  name: string
+  description: string | null
+  points_required: number
+  category: string | null
+  image_url: string | null
+  is_available: boolean
+  stock: number | null
+  terms_conditions: string | null
+  created_at: string
+  updated_at: string
+}
+
 export default function DashboardPage() {
-  const { user, businessUser, business } = useAuth()
+  const { user, businessUser, business, hasPermission } = useAuth()
   const [stats, setStats] = useState<DashboardStats>({
     reservationsToday: 0,
     newCustomers: 0,
@@ -50,12 +75,23 @@ export default function DashboardPage() {
   const [showSuggestions, setShowSuggestions] = useState(false)
   const suggestionsRef = useRef<HTMLDivElement>(null)
 
+  // States for point redemption
+  const [redeemPhoneNumber, setRedeemPhoneNumber] = useState('')
+  const [redeemFoundCustomer, setRedeemFoundCustomer] = useState<Customer | null>(null)
+  const [redeemableItems, setRedeemableItems] = useState<RedeemableItem[]>([])
+  const [selectedItem, setSelectedItem] = useState<RedeemableItem | null>(null)
+  const [redeemLoading, setRedeemLoading] = useState(false)
+  const [filteredRedeemCustomers, setFilteredRedeemCustomers] = useState<Customer[]>([])
+  const [showRedeemSuggestions, setShowRedeemSuggestions] = useState(false)
+  const redeemSuggestionsRef = useRef<HTMLDivElement>(null)
+
   const supabase = createClient()
 
   useEffect(() => {
     if (business?.id) {
       loadDashboardStats()
       loadCustomers()
+      loadRedeemableItems()
     }
   }, [business?.id])
 
@@ -82,6 +118,33 @@ export default function DashboardPage() {
       console.error('Error loading customers:', error)
       toast.error('Error al conectar con la base de datos')
       setCustomers([])
+    }
+  }
+
+  const loadRedeemableItems = async () => {
+    if (!business?.id) return
+    
+    try {
+      const { data, error } = await supabase
+        .from('redeemable_items')
+        .select('*')
+        .eq('business_id', business.id)
+        .eq('is_available', true)
+        .order('points_required', { ascending: true })
+      
+      if (error) {
+        console.error('Error loading redeemable items:', error)
+        toast.error('Error al cargar productos canjeables')
+        setRedeemableItems([])
+        return
+      }
+      
+      setRedeemableItems(data || [])
+      console.log('Loaded redeemable items from database:', data?.length || 0)
+    } catch (error) {
+      console.error('Error loading redeemable items:', error)
+      toast.error('Error al conectar con la base de datos')
+      setRedeemableItems([])
     }
   }
 
@@ -282,6 +345,164 @@ export default function DashboardPage() {
     }
   }
 
+  // Functions for point redemption
+  const searchRedeemCustomer = async () => {
+    if (!redeemPhoneNumber.trim()) {
+      toast.error('Ingresa un número de teléfono')
+      return
+    }
+
+    if (!business?.id) {
+      toast.error('Error: No se encontró información del negocio')
+      return
+    }
+
+    setRedeemLoading(true)
+    
+    try {
+      const { data: customer, error } = await supabase
+        .from('customers')
+        .select('*')
+        .eq('phone', redeemPhoneNumber.trim())
+        .eq('business_id', business.id)
+        .single()
+
+      if (error && error.code !== 'PGRST116') {
+        throw error
+      }
+
+      if (customer) {
+        setRedeemFoundCustomer(customer)
+        toast.success(`Cliente encontrado: ${customer.name || 'Sin nombre'}`)
+      } else {
+        setRedeemFoundCustomer(null)
+        toast.error('Cliente no encontrado en la base de datos')
+      }
+    } catch (error: any) {
+      toast.error('Error al buscar cliente: ' + error.message)
+    } finally {
+      setRedeemLoading(false)
+    }
+  }
+
+  const redeemPoints = async () => {
+    if (!redeemFoundCustomer || !selectedItem) {
+      toast.error('Selecciona un cliente y un producto para canjear')
+      return
+    }
+
+    if (redeemFoundCustomer.points < selectedItem.points_required) {
+      toast.error(`El cliente no tiene suficientes puntos. Necesita ${selectedItem.points_required} puntos, tiene ${redeemFoundCustomer.points}`)
+      return
+    }
+
+    setRedeemLoading(true)
+
+    try {
+      // Update customer points
+      const newPoints = redeemFoundCustomer.points - selectedItem.points_required
+      const { error: updateError } = await supabase
+        .from('customers')
+        .update({ 
+          points: newPoints,
+          last_interaction: new Date().toISOString()
+        })
+        .eq('id', redeemFoundCustomer.id)
+
+      if (updateError) {
+        console.error('Error updating customer points:', updateError)
+        toast.error('Error al actualizar puntos del cliente')
+        return
+      }
+
+      // Create point transaction record
+      const { error: transactionError } = await supabase
+        .from('point_transactions')
+        .insert({
+          business_id: redeemFoundCustomer.business_id,
+          customer_id: redeemFoundCustomer.id,
+          type: 'redemption',
+          points: -selectedItem.points_required,
+          description: `Canje de "${selectedItem.name}" por ${selectedItem.points_required} puntos`,
+          reference_id: selectedItem.id,
+          metadata: {
+            customer_phone: redeemPhoneNumber,
+            redeemed_item_id: selectedItem.id,
+            redeemed_item_name: selectedItem.name,
+            processed_by: user?.id || 'unknown',
+          }
+        })
+
+      if (transactionError) {
+        console.error('Error creating transaction record:', transactionError)
+        // Continue anyway, this is just for history
+      }
+
+      // Update stock if applicable
+      if (selectedItem.stock !== null && selectedItem.stock > 0) {
+        const { error: stockError } = await supabase
+          .from('redeemable_items')
+          .update({ 
+            stock: selectedItem.stock - 1,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', selectedItem.id)
+
+        if (stockError) {
+          console.error('Error updating stock:', stockError)
+          // Continue anyway
+        } else {
+          // Update local state
+          setRedeemableItems(prev => prev.map(item => 
+            item.id === selectedItem.id 
+              ? { ...item, stock: item.stock! - 1 }
+              : item
+          ))
+        }
+      }
+      
+      // Update local customer state
+      const updatedCustomer = {
+        ...redeemFoundCustomer,
+        points: newPoints,
+        last_interaction: new Date().toISOString()
+      }
+      setRedeemFoundCustomer(updatedCustomer)
+
+      toast.success(`¡Canje exitoso! ${selectedItem.points_required} puntos canjeados por "${selectedItem.name}"`)
+      toast.success(`Puntos restantes: ${newPoints}`)
+      
+      // Reset form
+      setRedeemPhoneNumber('')
+      setRedeemFoundCustomer(null)
+      setSelectedItem(null)
+      
+      // Reload customers to sync with DB
+      loadCustomers()
+      
+    } catch (error: any) {
+      console.error('Error redeeming points:', error)
+      toast.error('Error al canjear puntos: ' + error.message)
+    } finally {
+      setRedeemLoading(false)
+    }
+  }
+
+  const selectRedeemCustomer = (customer: Customer) => {
+    setRedeemPhoneNumber(customer.phone)
+    setRedeemFoundCustomer(customer)
+    setShowRedeemSuggestions(false)
+    toast.success(`Cliente encontrado: ${customer.name || 'Sin nombre'}`)
+  }
+
+  const handleRedeemPhoneNumberChange = (value: string) => {
+    setRedeemPhoneNumber(value)
+    if (redeemFoundCustomer && value !== redeemFoundCustomer.phone) {
+      setRedeemFoundCustomer(null)
+      setSelectedItem(null)
+    }
+  }
+
   useEffect(() => {
     if (amountSpent && foundCustomer && business?.id) {
       calculatePoints()
@@ -321,11 +542,29 @@ export default function DashboardPage() {
     }
   }
 
+  // Filter customers for redemption based on phone number input
+  useEffect(() => {
+    if (redeemPhoneNumber.length >= 3) {
+      const filtered = customers.filter(customer => 
+        customer.phone.toLowerCase().includes(redeemPhoneNumber.toLowerCase()) ||
+        customer.name?.toLowerCase().includes(redeemPhoneNumber.toLowerCase())
+      )
+      setFilteredRedeemCustomers(filtered)
+      setShowRedeemSuggestions(filtered.length > 0 && !redeemFoundCustomer)
+    } else {
+      setFilteredRedeemCustomers([])
+      setShowRedeemSuggestions(false)
+    }
+  }, [redeemPhoneNumber, customers, redeemFoundCustomer])
+
   // Close suggestions when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (suggestionsRef.current && !suggestionsRef.current.contains(event.target as Node)) {
         setShowSuggestions(false)
+      }
+      if (redeemSuggestionsRef.current && !redeemSuggestionsRef.current.contains(event.target as Node)) {
+        setShowRedeemSuggestions(false)
       }
     }
 
@@ -401,6 +640,7 @@ export default function DashboardPage() {
       </div>
 
       {/* Point Loading Form */}
+      {hasPermission('point_loading') && (
       <Card className="animate-slide-up">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -501,6 +741,160 @@ export default function DashboardPage() {
           </Button>
         </CardContent>
       </Card>
+      )}
+
+      {/* Point Redemption Form */}
+      {hasPermission('point_loading') && (
+      <Card className="animate-slide-up">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Gift className="h-5 w-5 text-primary" />
+            Canje de Puntos
+          </CardTitle>
+          <CardDescription>
+            Permite a los clientes canjear sus puntos por productos y servicios
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2 relative">
+              <Label htmlFor="redeemPhone">Número de Teléfono</Label>
+              <div className="flex gap-2">
+                <div className="relative flex-1" ref={redeemSuggestionsRef}>
+                  <Input
+                    id="redeemPhone"
+                    value={redeemPhoneNumber}
+                    onChange={(e) => handleRedeemPhoneNumberChange(e.target.value)}
+                    placeholder="+54 9 XXX XXX-XXXX"
+                    className="transition-all duration-200 focus:scale-[1.02]"
+                    onFocus={() => redeemPhoneNumber.length >= 3 && setShowRedeemSuggestions(filteredRedeemCustomers.length > 0 && !redeemFoundCustomer)}
+                  />
+                  
+                  {/* Suggestions dropdown for redemption */}
+                  {showRedeemSuggestions && (
+                    <div className="absolute top-full left-0 right-0 z-10 mt-1 bg-white border border-border rounded-md shadow-lg max-h-60 overflow-y-auto">
+                      {filteredRedeemCustomers.map((customer) => (
+                        <button
+                          key={customer.id}
+                          type="button"
+                          className="w-full px-3 py-2 text-left hover:bg-muted transition-colors border-b border-border last:border-b-0"
+                          onClick={() => selectRedeemCustomer(customer)}
+                        >
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <p className="font-medium text-sm">{customer.phone}</p>
+                              {customer.name && (
+                                <p className="text-xs text-muted-foreground">{customer.name}</p>
+                              )}
+                            </div>
+                            <div className="text-right">
+                              <p className="text-xs text-primary font-medium">{customer.points} pts</p>
+                              <p className="text-xs text-muted-foreground">${customer.total_spent.toLocaleString()}</p>
+                            </div>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <Button 
+                  onClick={searchRedeemCustomer}
+                  disabled={redeemLoading}
+                  variant="outline"
+                  size="sm"
+                  className="animate-scale-hover"
+                >
+                  <Search className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="redeemableItem">Canjear por</Label>
+              <Select 
+                value={selectedItem?.id || ''} 
+                onValueChange={(value) => {
+                  const item = redeemableItems.find(item => item.id === value)
+                  setSelectedItem(item || null)
+                }}
+                disabled={!redeemFoundCustomer}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Selecciona un producto" />
+                </SelectTrigger>
+                <SelectContent>
+                  {redeemableItems.map((item) => (
+                    <SelectItem 
+                      key={item.id} 
+                      value={item.id}
+                      disabled={redeemFoundCustomer ? redeemFoundCustomer.points < item.points_required : true}
+                    >
+                      <div className="flex justify-between items-center w-full">
+                        <div className="flex flex-col items-start">
+                          <span className="font-medium">{item.name}</span>
+                          <span className="text-xs text-muted-foreground">{item.description}</span>
+                          {item.stock !== null && item.stock <= 5 && (
+                            <span className="text-xs text-orange-600">
+                              Stock: {item.stock}
+                            </span>
+                          )}
+                        </div>
+                        <div className="ml-4 text-right">
+                          <span className="text-sm font-semibold text-primary">
+                            {item.points_required} pts
+                          </span>
+                          {item.category && (
+                            <div className="text-xs text-muted-foreground capitalize">
+                              {item.category}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          {redeemFoundCustomer && (
+            <div className="p-3 bg-blue-50 rounded-md animate-slide-up">
+              <p className="text-blue-800 font-medium text-sm">
+                Cliente: {redeemFoundCustomer.name || 'Sin nombre'} ({redeemFoundCustomer.phone})
+              </p>
+              <p className="text-blue-600 text-sm">
+                Puntos disponibles: {redeemFoundCustomer.points}
+              </p>
+            </div>
+          )}
+
+          {selectedItem && redeemFoundCustomer && (
+            <div className="p-3 bg-primary/10 rounded-md animate-slide-up">
+              <p className="text-primary font-medium">
+                Canjeando: {selectedItem.name} por {selectedItem.points_required} puntos
+              </p>
+              {redeemFoundCustomer.points >= selectedItem.points_required ? (
+                <p className="text-green-600 text-sm">
+                  Puntos restantes después del canje: {redeemFoundCustomer.points - selectedItem.points_required}
+                </p>
+              ) : (
+                <p className="text-red-600 text-sm">
+                  Puntos insuficientes. Faltan {selectedItem.points_required - redeemFoundCustomer.points} puntos
+                </p>
+              )}
+            </div>
+          )}
+
+          <Button 
+            onClick={redeemPoints}
+            disabled={redeemLoading || !redeemFoundCustomer || !selectedItem || (redeemFoundCustomer && selectedItem && redeemFoundCustomer.points < selectedItem.points_required)}
+            className="w-full animate-scale-hover"
+          >
+            {redeemLoading ? 'Procesando...' : 'Canjear Puntos'}
+          </Button>
+        </CardContent>
+      </Card>
+      )}
 
       {/* Quick Summary */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6 animate-slide-up">

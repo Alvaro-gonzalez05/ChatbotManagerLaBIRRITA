@@ -26,9 +26,7 @@ import {
   Shield,
   ShieldCheck,
   UserPlus,
-  Settings,
-  Eye,
-  EyeOff
+  Settings
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { BusinessUser, UserPermissions } from '@/types/database'
@@ -40,7 +38,7 @@ interface EmployeeWithAuth extends BusinessUser {
 }
 
 export default function EmployeesPage() {
-  const { business, businessUser } = useAuth()
+  const { business, businessUser, user } = useAuth()
   const [employees, setEmployees] = useState<EmployeeWithAuth[]>([])
   const [loading, setLoading] = useState(true)
   const [isAddModalOpen, setIsAddModalOpen] = useState(false)
@@ -92,104 +90,27 @@ export default function EmployeesPage() {
     
     setLoading(true)
     try {
-      // Try the JOIN query first since foreign keys exist
-      let { data, error } = await supabase
-        .from('business_users')
-        .select(`
-          *,
-          user:user_id (
-            email,
-            last_sign_in_at,
-            email_confirmed_at
-          )
-        `)
-        .eq('business_id', business.id)
-        .order('created_at', { ascending: false })
+      // Use our API route instead of direct database queries
+      const response = await fetch(`/api/employees?business_id=${business.id}`)
       
-      // If JOIN fails, try without it
-      if (error && (error.message?.includes('relationship') || error.message?.includes('schema cache'))) {
-        console.warn('JOIN failed, trying simple query:', error.message)
-        
-        const { data: simpleData, error: simpleError } = await supabase
-          .from('business_users')
-          .select('*')
-          .eq('business_id', business.id)
-          .order('created_at', { ascending: false })
-        
-        data = simpleData
-        error = simpleError
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.error || 'Failed to load employees')
       }
       
-      if (error) {
-        console.error('Error loading employees:', error)
-        
-        // Check if it's a permission error
-        if (error.message?.includes('permission') || error.message?.includes('policy')) {
-          toast.error('Sin permisos para acceder a los empleados. Verifique las políticas RLS.')
-        } else {
-          toast.error(`Error de base de datos: ${error.message}`)
-        }
-        
-        setEmployees([])
-        return
-      }
+      const { employees: employeesData } = await response.json()
+      setEmployees(employeesData || [])
+      console.log('Loaded employees from API:', employeesData?.length || 0)
       
-      // Transform data to include user info
-      const employeesWithAuth = data?.map(emp => ({
-        ...emp,
-        email: emp.user?.email || emp.user_id || 'Sin email',
-        last_sign_in: emp.user?.last_sign_in_at || null,
-        is_confirmed: !!emp.user?.email_confirmed_at
-      })) || []
-      
-      setEmployees(employeesWithAuth)
-      console.log('Loaded employees from database:', employeesWithAuth.length)
-      
-      // If we didn't get user info from JOIN, try to load it separately
-      if (employeesWithAuth.length > 0 && !employeesWithAuth[0].user) {
-        await loadAuthInfo(employeesWithAuth)
-      }
     } catch (error: any) {
       console.error('Error loading employees:', error)
-      toast.error(`Error de conexión: ${error.message || 'No se pudo conectar con la base de datos'}`)
+      toast.error(`Error al cargar empleados: ${error.message}`)
       setEmployees([])
     } finally {
       setLoading(false)
     }
   }
 
-  const loadAuthInfo = async (employeesList: EmployeeWithAuth[]) => {
-    try {
-      // Try to get user info from auth.users using admin API
-      for (const employee of employeesList.slice(0, 10)) { // Limit to avoid rate limits
-        if (employee.user_id && employee.email === 'Sin email') {
-          try {
-            const { data: userData, error: userError } = await supabase.auth.admin.getUserById(employee.user_id)
-            
-            if (!userError && userData.user) {
-              // Update employee with real auth info
-              setEmployees(prev => prev.map(emp => 
-                emp.id === employee.id 
-                  ? {
-                      ...emp,
-                      email: userData.user.email || `user-${employee.user_id.substring(0, 8)}`,
-                      last_sign_in: userData.user.last_sign_in_at || null,
-                      is_confirmed: !!userData.user.email_confirmed_at
-                    }
-                  : emp
-              ))
-            }
-          } catch (userError) {
-            // Ignore individual user errors, keep basic info
-            console.warn('Could not load auth info for user:', employee.user_id)
-          }
-        }
-      }
-    } catch (error) {
-      console.warn('Could not load auth information:', error)
-      // Auth info is optional, continue with basic employee data
-    }
-  }
 
   const generatePassword = () => {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789'
@@ -207,7 +128,7 @@ export default function EmployeesPage() {
     }
 
     if (!editingEmployee && !formData.password) {
-      toast.error('Genera una contraseña para el nuevo empleado')
+      toast.error('Ingresa una contraseña para el nuevo empleado')
       return
     }
 
@@ -216,78 +137,56 @@ export default function EmployeesPage() {
     try {
       if (editingEmployee) {
         // Update existing employee
-        const { error } = await supabase
-          .from('business_users')
-          .update({
+        const response = await fetch(`/api/employees/${editingEmployee.id}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            email: formData.email,
+            password: formData.password || undefined, // Only update if provided
             first_name: formData.first_name,
             last_name: formData.last_name,
             permissions: formData.permissions,
-            updated_at: new Date().toISOString()
+            is_active: true
           })
-          .eq('id', editingEmployee.id)
+        })
         
-        if (error) throw error
+        const result = await response.json()
+        
+        if (!response.ok) {
+          throw new Error(result.error || 'Failed to update employee')
+        }
+        
         toast.success('Empleado actualizado correctamente')
       } else {
-        try {
-          // Try to create new user in Supabase Auth
-          const { data: authData, error: authError } = await supabase.auth.admin.createUser({
+        // Create new employee
+        const response = await fetch('/api/employees', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
             email: formData.email,
             password: formData.password,
-            email_confirm: true,
-            user_metadata: {
-              first_name: formData.first_name,
-              last_name: formData.last_name,
-              role: 'employee'
-            }
+            first_name: formData.first_name,
+            last_name: formData.last_name,
+            business_id: business.id,
+            permissions: formData.permissions,
+            created_by: businessUser?.user_id
           })
-
-          if (authError) {
-            // Check if it's a permission error
-            if (authError.message?.includes('not allowed') || authError.message?.includes('permission')) {
-              throw new Error('Sin permisos de administrador para crear usuarios. Configure el acceso admin en Supabase.')
-            }
-            throw authError
-          }
-
-          if (!authData.user) {
-            throw new Error('No se pudo crear el usuario en el sistema de autenticación')
-          }
-
-          // Create business_user record
-          const { error: businessUserError } = await supabase
-            .from('business_users')
-            .insert({
-              business_id: business.id,
-              user_id: authData.user.id,
-              role: 'employee',
-              permissions: formData.permissions,
-              first_name: formData.first_name,
-              last_name: formData.last_name,
-              created_by: businessUser?.user_id
-            })
-
-          if (businessUserError) {
-            // If business_user creation fails, we should clean up the auth user
-            console.error('Failed to create business_user, auth user created but orphaned')
-            throw new Error(`Error al crear registro de empleado: ${businessUserError.message}`)
-          }
-
-          toast.success('Empleado creado correctamente')
-          toast.success(`Contraseña generada: ${formData.password}`, {
-            duration: 10000
-          })
-        } catch (createError: any) {
-          // If it's a permission error, suggest alternative
-          if (createError.message?.includes('permisos') || createError.message?.includes('not allowed')) {
-            toast.error(createError.message)
-            toast.info('Alternativa: Invite al empleado a registrarse por email desde Supabase Dashboard', {
-              duration: 8000
-            })
-          } else {
-            throw createError
-          }
+        })
+        
+        const result = await response.json()
+        
+        if (!response.ok) {
+          throw new Error(result.error || 'Failed to create employee')
         }
+        
+        toast.success('Empleado creado correctamente')
+        toast.success(`Contraseña: ${formData.password}`, {
+          duration: 10000
+        })
       }
 
       resetForm()
@@ -340,46 +239,105 @@ export default function EmployeesPage() {
   }
 
   const handleDelete = async (employee: EmployeeWithAuth) => {
-    if (employee.role === 'admin') {
-      toast.error('No se puede eliminar al administrador')
+    // Prevent deleting yourself
+    if (employee.user_id === user?.id) {
+      toast.error('No puedes eliminarte a ti mismo')
       return
     }
 
-    if (!confirm('¿Estás seguro de que deseas eliminar este empleado? Esta acción no se puede deshacer.')) {
-      return
-    }
+    const roleText = employee.role === 'admin' ? 'administrador' : 'empleado'
+    const roleTextCapitalized = employee.role === 'admin' ? 'Administrador' : 'Empleado'
+    
+    // Create elegant confirmation toast with Sonner
+    toast(
+      <div className="flex flex-col gap-3">
+        <div className="flex items-start gap-3">
+          <div className="flex-shrink-0 w-10 h-10 bg-red-100 rounded-full flex items-center justify-center">
+            <Trash2 className="w-5 h-5 text-red-600" />
+          </div>
+          <div className="flex-1">
+            <h3 className="font-semibold text-gray-900">
+              ¿Eliminar {roleText}?
+            </h3>
+            <p className="text-sm text-gray-600 mt-1">
+              Se eliminará permanentemente a <span className="font-medium">{employee.first_name} {employee.last_name}</span>. 
+              Esta acción no se puede deshacer.
+            </p>
+          </div>
+        </div>
+        <div className="flex gap-2 ml-13">
+          <button
+            onClick={() => {
+              toast.dismiss()
+              performDelete(employee, roleTextCapitalized)
+            }}
+            className="px-3 py-1.5 bg-red-600 text-white text-sm font-medium rounded-md hover:bg-red-700 transition-colors"
+          >
+            Eliminar
+          </button>
+          <button
+            onClick={() => toast.dismiss()}
+            className="px-3 py-1.5 bg-gray-200 text-gray-800 text-sm font-medium rounded-md hover:bg-gray-300 transition-colors"
+          >
+            Cancelar
+          </button>
+        </div>
+      </div>,
+      {
+        duration: Infinity, // Don't auto-dismiss
+        position: 'top-center',
+        className: 'w-96',
+      }
+    )
+  }
+
+  const performDelete = async (employee: EmployeeWithAuth, roleText: string) => {
+    setLoading(true)
 
     try {
-      // Delete business_user record
-      const { error: businessUserError } = await supabase
-        .from('business_users')
-        .delete()
-        .eq('id', employee.id)
-      
-      if (businessUserError) {
-        if (businessUserError.message?.includes('permission') || businessUserError.message?.includes('policy')) {
-          toast.error('Sin permisos para eliminar empleados. Verifique las políticas RLS.')
-        } else {
-          toast.error(`Error al eliminar empleado: ${businessUserError.message}`)
-        }
-        return
-      }
+      // Use our API route for deletion
+      const response = await fetch(`/api/employees/${employee.id}`, {
+        method: 'DELETE',
+      })
 
-      // Optionally delete from auth.users (requires admin privileges)
-      try {
-        const { error: authError } = await supabase.auth.admin.deleteUser(employee.user_id)
-        if (authError) {
-          console.warn('Could not delete auth user (requires admin privileges):', authError)
-          toast.info('Empleado eliminado. Para eliminar completamente la cuenta, hazlo desde Supabase Dashboard.')
-        }
-      } catch (authDeleteError) {
-        console.warn('Auth user deletion failed:', authDeleteError)
+      const result = await response.json()
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Failed to delete employee')
       }
       
-      toast.success('Empleado eliminado correctamente')
+      toast.success(
+        <div className="flex items-center gap-2">
+          <div className="w-6 h-6 bg-green-100 rounded-full flex items-center justify-center">
+            <svg className="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+            </svg>
+          </div>
+          <span>{roleText} eliminado correctamente</span>
+        </div>,
+        {
+          duration: 4000,
+        }
+      )
       loadEmployees()
+      
     } catch (error: any) {
-      toast.error(`Error de conexión: ${error.message || 'No se pudo eliminar el empleado'}`)
+      console.error('Error deleting employee:', error)
+      toast.error(
+        <div className="flex items-center gap-2">
+          <div className="w-6 h-6 bg-red-100 rounded-full flex items-center justify-center">
+            <svg className="w-4 h-4 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </div>
+          <span>Error al eliminar: {error.message}</span>
+        </div>,
+        {
+          duration: 5000,
+        }
+      )
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -608,27 +566,31 @@ export default function EmployeesPage() {
                   )}
                 </div>
 
-                {!editingEmployee && (
-                  <div className="space-y-2">
-                    <Label htmlFor="password">Contraseña Temporal</Label>
-                    <div className="flex gap-2">
-                      <Input
-                        id="password"
-                        type="text"
-                        value={formData.password}
-                        onChange={(e) => setFormData({...formData, password: e.target.value})}
-                        placeholder="Genera una contraseña"
-                        readOnly
-                      />
+                <div className="space-y-2">
+                  <Label htmlFor="password">
+                    {editingEmployee ? 'Nueva Contraseña (opcional)' : 'Contraseña'}
+                  </Label>
+                  <div className="flex gap-2">
+                    <Input
+                      id="password"
+                      type="password"
+                      value={formData.password}
+                      onChange={(e) => setFormData({...formData, password: e.target.value})}
+                      placeholder={editingEmployee ? "Dejar vacío para no cambiar" : "Ingresa una contraseña"}
+                    />
+                    {!editingEmployee && (
                       <Button type="button" onClick={generatePassword} variant="outline">
                         Generar
                       </Button>
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      El empleado podrá cambiar esta contraseña en su primer inicio de sesión
-                    </p>
+                    )}
                   </div>
-                )}
+                  <p className="text-xs text-muted-foreground">
+                    {editingEmployee 
+                      ? 'Deja vacío si no quieres cambiar la contraseña'
+                      : 'El empleado podrá cambiar esta contraseña después del primer inicio de sesión'
+                    }
+                  </p>
+                </div>
               </div>
 
               {/* Permissions */}
@@ -703,7 +665,7 @@ export default function EmployeesPage() {
         <Card className="animate-scale-hover">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Empleados Activos</CardTitle>
-            <Eye className="h-4 w-4 text-muted-foreground" />
+            <ShieldCheck className="h-4 w-4 text-green-600" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold text-green-600">{getActiveEmployees()}</div>
@@ -713,7 +675,7 @@ export default function EmployeesPage() {
         <Card className="animate-scale-hover">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Empleados Inactivos</CardTitle>
-            <EyeOff className="h-4 w-4 text-muted-foreground" />
+            <Shield className="h-4 w-4 text-gray-600" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold text-gray-600">{getInactiveEmployees()}</div>
@@ -750,6 +712,7 @@ export default function EmployeesPage() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>Empleado</TableHead>
+                    <TableHead>Email</TableHead>
                     <TableHead>Rol</TableHead>
                     <TableHead>Permisos</TableHead>
                     <TableHead>Último Acceso</TableHead>
@@ -765,15 +728,18 @@ export default function EmployeesPage() {
                           <p className="font-semibold">
                             {employee.first_name} {employee.last_name}
                           </p>
-                          <p className="text-sm text-muted-foreground">
-                            {employee.email}
-                          </p>
                           {!employee.is_confirmed && (
                             <Badge variant="outline" className="text-xs mt-1">
                               Email no confirmado
                             </Badge>
                           )}
                         </div>
+                      </TableCell>
+                      
+                      <TableCell>
+                        <p className="text-sm">
+                          {employee.email}
+                        </p>
                       </TableCell>
                       
                       <TableCell>
@@ -835,31 +801,15 @@ export default function EmployeesPage() {
                             <Edit className="h-4 w-4" />
                           </Button>
                           
-                          {employee.role !== 'admin' && (
-                            <>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => handleToggleStatus(employee)}
-                                className="h-8 w-8 p-0"
-                              >
-                                {employee.is_active ? (
-                                  <EyeOff className="h-4 w-4" />
-                                ) : (
-                                  <Eye className="h-4 w-4" />
-                                )}
-                              </Button>
-                              
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => handleDelete(employee)}
-                                className="h-8 w-8 p-0 text-destructive hover:text-destructive"
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </Button>
-                            </>
-                          )}
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleDelete(employee)}
+                            className="h-8 w-8 p-0 text-destructive hover:text-destructive hover:bg-destructive/10"
+                            title={`Eliminar ${employee.role === 'admin' ? 'administrador' : 'empleado'}`}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
                         </div>
                       </TableCell>
                     </TableRow>

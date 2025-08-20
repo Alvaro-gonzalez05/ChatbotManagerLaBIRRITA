@@ -122,10 +122,12 @@ export default function DashboardLayout({
           {/* User info */}
           <div className="px-6 py-4 border-b border-border">
             <p className="font-medium text-sm">
-              Bienvenido/a, {businessUser?.first_name || user?.email?.split('@')[0] || 'Usuario'}
+              Bienvenido/a, {businessUser?.first_name ? `${businessUser.first_name} ${businessUser.last_name || ''}`.trim() : user?.email?.split('@')[0] || 'Usuario'}
             </p>
             <p className="text-xs text-muted-foreground capitalize">
-              {businessUser?.role === 'owner' ? 'Administrador' : businessUser?.role || 'Admin'}
+              {businessUser?.role === 'admin' ? 'Administrador' : 
+               businessUser?.role === 'owner' ? 'Propietario' : 
+               businessUser?.role || 'Empleado'}
             </p>
           </div>
 

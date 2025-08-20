@@ -84,6 +84,19 @@ export class AIService {
   }
 
   private async generateResponse(phoneNumber: string, businessId: string): Promise<string> {
+    // Get conversation history
+    const conversation = this.getConversation(phoneNumber)
+    const lastMessage = conversation[conversation.length - 1]?.content || ''
+    
+    // Check for points query first (fast response)
+    if (/puntos|fidelidad|loyalty|canjear|canjes|nivel|vip/i.test(lastMessage)) {
+      const pointsResponse = await this.processPointsQuery(phoneNumber, businessId)
+      if (pointsResponse) {
+        this.addToConversation(phoneNumber, { role: 'assistant', content: pointsResponse })
+        return pointsResponse
+      }
+    }
+
     // Get business configuration
     const businessConfig = await this.getBusinessConfig(businessId)
     if (!businessConfig) {
@@ -92,9 +105,6 @@ export class AIService {
 
     // Get or create customer
     const customer = await this.getOrCreateCustomer(phoneNumber, businessId)
-    
-    // Get conversation history
-    const conversation = this.getConversation(phoneNumber)
     
     // Build context for AI
     const systemPrompt = this.buildSystemPrompt(businessConfig, customer)
@@ -136,6 +146,10 @@ export class AIService {
       capabilities: []
     }
     
+    const customerPoints = customer.points || 0
+    const customerVisits = customer.visit_count || 0
+    const customerLevel = this.getCustomerLevel(customerPoints)
+    
     return `Eres un asistente virtual inteligente para ${business.name}. 
 
 INFORMACIÓN DEL NEGOCIO:
@@ -152,6 +166,10 @@ INFORMACIÓN DEL CLIENTE:
 - Teléfono: ${customer.phone_number || customer.phone}
 - Nombre: ${customer.name || 'No registrado aún'}
 - Cumpleaños: ${customer.birthday || 'No registrado aún'}
+- Puntos de fidelidad: ${customerPoints} puntos
+- Visitas realizadas: ${customerVisits}
+- Nivel VIP: ${customerLevel}
+- Total gastado: $${customer.total_spent || 0}
 
 INSTRUCCIONES IMPORTANTES:
 1. CLIENTE NUEVO: Si el cliente no tiene nombre registrado, pregunta: "¡Hola! Para poder ayudarte mejor, ¿cómo te llamo?"
@@ -162,14 +180,18 @@ INSTRUCCIONES IMPORTANTES:
    - Segundo: "¿A qué hora prefieres?"  
    - Tercero: "¿Para cuántas personas?"
    - Cuarto: Confirma todos los datos antes de finalizar
-5. HORARIOS DE SERVICIOS IMPORTANTES:
+5. PUNTOS DE FIDELIDAD: 
+   - Si preguntan por puntos, responde con los datos actuales: "¡Tienes ${customerPoints} puntos acumulados!"
+   - Si es nivel VIP, menciona sus beneficios: "Como cliente ${customerLevel}, tienes beneficios especiales"
+   - Si no tienen puntos aún, explica cómo ganarlos
+6. HORARIOS DE SERVICIOS IMPORTANTES:
    - CENA: Disponible desde las 20:30hs hasta las 23:59hs
    - BAILE: Disponible desde las 00:00hs (medianoche) hasta las 06:00hs
    - Si alguien solicita "baile" en horario de cena (20:00hs-23:59hs), corrígelo amablemente: "A esa hora sería para cena. El baile empieza a partir de medianoche. ¿Te parece bien reservar para cena a las [hora] o prefieres baile más tarde?"
-6. CONFIRMACIÓN: Solo cuando tengas TODOS los datos (nombre, fecha, hora, personas), di: "¡Perfecto! Tu reserva está confirmada para [nombre] el [fecha] a las [hora] para [personas] personas"
-7. TONO: Mantén siempre el tono ${personality?.tone || 'amigable'} y profesional
-8. EMOJIS: Usa emojis moderadamente para ser cercano pero no exageres
-9. NO ASUMAS: Nunca asumas información que el cliente no haya dado explícitamente
+7. CONFIRMACIÓN: Solo cuando tengas TODOS los datos (nombre, fecha, hora, personas), di: "¡Perfecto! Tu reserva está confirmada para [nombre] el [fecha] a las [hora] para [personas] personas"
+8. TONO: Mantén siempre el tono ${personality?.tone || 'amigable'} y profesional
+9. EMOJIS: Usa emojis moderadamente para ser cercano pero no exageres
+10. NO ASUMAS: Nunca asumas información que el cliente no haya dado explícitamente
 
 HORARIOS DE ATENCIÓN:
 ${this.formatWorkingHours(business.working_hours)}
@@ -637,44 +659,67 @@ Responde de manera natural, útil y según tu personalidad configurada.`
       console.log('Combined datetime (Mendoza timezone):', reservationDateTime.toISOString())
       console.log('Local Mendoza time:', reservationMoment.format('YYYY-MM-DD HH:mm:ss Z'))
       
-      // Determine reservation type based on business hours
-      // CENA: desde 20:30hs (8:30 PM)
-      // BAILE: desde 00:00hs (midnight)
+      // Determine reservation type based on business hours and customer intent
       let reservationType = 'cena'
       const hour = parseInt(reservationData.time.split(':')[0])
       const minute = parseInt(reservationData.time.split(':')[1] || '0')
       const totalMinutes = hour * 60 + minute
       
       // Business hours logic:
-      // Cena: 20:30 (1230 minutes) to 23:59 (1439 minutes)
-      // Baile: 00:00 (0 minutes) to 06:00 (360 minutes)
+      // CENA: 20:30 (1230 minutes) to 23:59 (1439 minutes)
+      // BAILE: 00:00 (0 minutes) to 06:00 (360 minutes)
+      // BAILE TARDÍO: 23:00 onwards if explicitly requested
       const CENA_START = 20 * 60 + 30 // 20:30 = 1230 minutes
-      const BAILE_START = 0 // 00:00 = 0 minutes
-      const BAILE_END = 6 * 60 // 06:00 = 360 minutes
+      const CENA_END = 23 * 60 + 59   // 23:59 = 1439 minutes
+      const BAILE_START = 0           // 00:00 = 0 minutes
+      const BAILE_END = 6 * 60        // 06:00 = 360 minutes
+      const LATE_BAILE_START = 23 * 60 // 23:00 = 1380 minutes
       
-      // Check if customer explicitly requested baile in conversation
-      const allMessages = conversation
+      // Check customer's explicit intent from conversation
+      const allUserMessages = conversation
         .filter(msg => msg.role === 'user')
-        .map(msg => msg.content)
+        .map(msg => msg.content.toLowerCase())
         .join(' ')
       
-      const explicitlyRequestedBaile = allMessages.includes('baile') || allMessages.includes('boliche')
+      const explicitlyRequestedBaile = /\b(baile|bailar|boliche|discoteca|dancing|fiesta|party)\b/i.test(allUserMessages)
+      const explicitlyRequestedCena = /\b(cena|cenar|comer|comida|mesa|dinner)\b/i.test(allUserMessages)
       
+      // Determine type based on time and intent
       if (totalMinutes >= BAILE_START && totalMinutes <= BAILE_END) {
-        // Between 00:00 and 06:00 is always baile time
+        // 00:00 to 06:00 - Always baile time
         reservationType = 'baile'
-      } else if (totalMinutes >= CENA_START) {
-        // From 20:30 onwards - default is cena unless explicitly requested baile
-        if (explicitlyRequestedBaile && totalMinutes >= (23 * 60)) {
-          // Only allow baile if after 23:00 and explicitly requested
+        console.log('Time slot: Early morning baile (00:00-06:00)')
+      } else if (totalMinutes >= CENA_START && totalMinutes <= CENA_END) {
+        // 20:30 to 23:59 - Could be cena or late baile
+        if (explicitlyRequestedBaile && totalMinutes >= LATE_BAILE_START) {
+          // 23:00+ with explicit baile request
           reservationType = 'baile'
-        } else {
-          // Default to cena for dinner hours (20:30-23:59)
+          console.log('Time slot: Late night baile (23:00+) - explicit request')
+        } else if (explicitlyRequestedCena || !explicitlyRequestedBaile) {
+          // Default to cena unless explicitly requested baile
           reservationType = 'cena'
+          console.log('Time slot: Dinner time (20:30-23:59) - default to cena')
+        } else {
+          // Ambiguous case - default to cena but mention both options
+          reservationType = 'cena'
+          console.log('Time slot: Ambiguous time - defaulting to cena')
         }
-      } else {
-        // Before 20:30 is always cena
+      } else if (totalMinutes < CENA_START) {
+        // Before 20:30 - Too early for normal service
         reservationType = 'cena'
+        console.log('Time slot: Before normal hours - defaulting to cena')
+      } else {
+        // After 23:59 and before 00:00 (shouldn't happen but safety)
+        reservationType = explicitlyRequestedBaile ? 'baile' : 'cena'
+        console.log('Time slot: Edge case - using customer intent')
+      }
+      
+      // Additional validation: suggest alternative if time doesn't match typical service
+      let suggestAlternative = false
+      if (reservationType === 'cena' && explicitlyRequestedBaile && totalMinutes < LATE_BAILE_START) {
+        suggestAlternative = true
+      } else if (reservationType === 'baile' && explicitlyRequestedCena && totalMinutes >= CENA_START && totalMinutes <= CENA_END) {
+        suggestAlternative = true
       }
       
       console.log('Reservation type determined:', reservationType, 'for time:', reservationData.time, `(${totalMinutes} minutes)`)
@@ -752,5 +797,96 @@ Responde de manera natural, útil y según tu personalidad configurada.`
   ): Promise<string> {
     this.addToConversation(phoneNumber, { role: 'user', content: message })
     return await this.generateResponse(phoneNumber, businessId)
+  }
+
+  // Get customer VIP level based on points
+  private getCustomerLevel(points: number): string {
+    if (points >= 3000) return 'Oro'
+    if (points >= 1500) return 'Plata'
+    if (points >= 500) return 'Bronce'
+    return 'Cliente Regular'
+  }
+
+  // Get loyalty settings for business
+  private async getLoyaltySettings(businessId: string): Promise<any> {
+    try {
+      const { data, error } = await supabase
+        .from('loyalty_settings')
+        .select('*')
+        .eq('business_id', businessId)
+        .single()
+
+      if (error) return null
+      return data
+    } catch (error) {
+      console.error('Error getting loyalty settings:', error)
+      return null
+    }
+  }
+
+  // Get redeemable items for customer points consultation
+  private async getRedeemableItems(businessId: string, customerPoints: number): Promise<string> {
+    try {
+      const { data, error } = await supabase
+        .from('redeemable_items')
+        .select('name, points_required, description')
+        .eq('business_id', businessId)
+        .eq('is_available', true)
+        .lte('points_required', customerPoints + 200) // Show items within reach
+        .order('points_required', { ascending: true })
+        .limit(5)
+
+      if (error || !data || data.length === 0) {
+        return "Consulta en el local por los productos disponibles para canje."
+      }
+
+      let itemsList = "🎁 Con tus puntos puedes canjear:\n\n"
+      data.forEach(item => {
+        const canAfford = customerPoints >= item.points_required
+        const status = canAfford ? '✅' : '⏳'
+        itemsList += `${status} ${item.name} - ${item.points_required} pts\n`
+        if (item.description) {
+          itemsList += `   ${item.description}\n`
+        }
+        itemsList += '\n'
+      })
+
+      return itemsList
+    } catch (error) {
+      console.error('Error getting redeemable items:', error)
+      return "Consulta en el local por los productos disponibles para canje."
+    }
+  }
+
+  // Enhanced data extraction with points queries
+  private async processPointsQuery(phoneNumber: string, businessId: string): Promise<string | null> {
+    try {
+      const customer = await this.getOrCreateCustomer(phoneNumber, businessId)
+      
+      if (!customer || !customer.name) {
+        return "Para consultar tus puntos, necesito que me digas tu nombre primero. ¿Cómo te llamas?"
+      }
+
+      const points = customer.points || 0
+      const level = this.getCustomerLevel(points)
+      const redeemableItems = await this.getRedeemableItems(businessId, points)
+      
+      let response = `🌟 ¡Hola ${customer.name}!\n\n`
+      response += `💎 Puntos actuales: ${points}\n`
+      response += `🏆 Nivel: ${level}\n`
+      response += `🎯 Visitas: ${customer.visit_count || 0}\n\n`
+      
+      if (points > 0) {
+        response += redeemableItems
+        response += "\n💡 ¿Te interesa canjear algún producto?"
+      } else {
+        response += "¡Aún no tienes puntos! Empezarás a ganar puntos con tu próxima visita. 🎉"
+      }
+
+      return response
+    } catch (error) {
+      console.error('Error processing points query:', error)
+      return null
+    }
   }
 }

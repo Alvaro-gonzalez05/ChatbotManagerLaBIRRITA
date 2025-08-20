@@ -1,8 +1,7 @@
 import { createClient } from '@supabase/supabase-js'
-import { EvolutionApiService } from './evolutionApi'
 
-const supabaseUrl = process.env.SUPABASE_URL!
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY!
+const supabaseUrl = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)!.replace(/['"]/g, '')
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY!.replace(/['"]/g, '')
 const supabase = createClient(supabaseUrl, supabaseKey)
 
 export interface BotPersonality {
@@ -31,21 +30,28 @@ export interface BusinessInfo {
   specialties?: string[]
 }
 
-export class BotService {
-  private evolutionApi: EvolutionApiService
+export interface ConversationContext {
+  id?: string
+  customer_phone: string
+  business_id: string
+  customer_name?: string
+  reservation_day?: string
+  reservation_time?: string
+  reservation_type?: string
+  reservation_people?: number
+  context_data?: any
+  created_at?: string
+  updated_at?: string
+  expires_at?: string
+}
 
+export class BotService {
   constructor() {
-    this.evolutionApi = new EvolutionApiService()
+    // No need for external dependencies
   }
 
-  async processMessage(instanceName: string, customerNumber: string, messageText: string): Promise<string> {
+  async processMessage(messageText: string, customerNumber: string, businessId: string, customerName?: string): Promise<string> {
     try {
-      // Get business info from instance name (you may need to store this mapping in database)
-      const businessId = await this.getBusinessIdFromInstance(instanceName)
-      if (!businessId) {
-        return 'Lo siento, no pude procesar tu mensaje en este momento.'
-      }
-
       // Get bot personality and business info
       const [botPersonality, businessInfo] = await Promise.all([
         this.getBotPersonality(businessId),
@@ -56,13 +62,62 @@ export class BotService {
         return 'Lo siento, el servicio no está disponible en este momento.'
       }
 
-      // Check if business is open
+      // Durante las pruebas, siempre responder normalmente
+      // TODO: Descomentar cuando quieras activar horarios
+      /*
       if (!this.isBusinessOpen(businessInfo.working_hours)) {
         return botPersonality.out_of_hours_message
       }
+      */
 
-      // Generate response based on message
-      const response = this.generateResponse(messageText, botPersonality, businessInfo, customerNumber)
+      // Check if this is a name registration message for a new customer
+      const isNameRegistration = this.isNameRegistrationMessage(messageText, customerName)
+      if (isNameRegistration) {
+        const extractedName = this.extractNameFromMessage(messageText)
+        if (extractedName) {
+          // Save new customer to database
+          const customerId = await this.saveCustomer(customerNumber, extractedName, businessId)
+          if (customerId) {
+            return `¡Perfecto ${extractedName}! Ya te tengo registrado en nuestro sistema. ¿En qué te puedo ayudar hoy?`
+          } else {
+            return `¡Perfecto ${extractedName}! ¿En qué te puedo ayudar hoy?`
+          }
+        }
+      }
+
+      // Try to get customer name from database if not provided
+      if (!customerName || customerName === 'Cliente') {
+        try {
+          const { data: customer } = await supabase
+            .from('customers')
+            .select('name')
+            .eq('phone', customerNumber)
+            .eq('business_id', businessId)
+            .single()
+          
+          if (customer?.name) {
+            customerName = customer.name
+          }
+        } catch (error) {
+          // Customer not found, will use provided name or 'Cliente'
+        }
+      }
+
+      // Get or create conversation context
+      let context = await this.getConversationContext(customerNumber, businessId)
+
+      // Check if this is a new conversation that should reset context
+      if (this.isNewConversation(messageText, context)) {
+        // Clear existing context for new conversation
+        await this.clearConversationContext(customerNumber, businessId)
+        context = null
+      }
+
+      // Generate response based on message and context
+      const response = await this.generateResponse(messageText, botPersonality, businessInfo, customerNumber, customerName, context)
+      
+      // Update conversation context based on the interaction
+      await this.updateConversationContext(customerNumber, businessId, messageText, customerName, context)
       
       // Log conversation (optional)
       await this.logConversation(businessId, customerNumber, messageText, response)
@@ -106,19 +161,13 @@ export class BotService {
     }
   }
 
-  private async getBusinessIdFromInstance(instanceName: string): Promise<string | null> {
-    try {
-      // You might store instance -> business mapping in database
-      // For now, we'll extract it from instance name pattern: "business-{id}-bot"
-      const match = instanceName.match(/business-(.+)-bot/)
-      return match?.[1] ?? null
-    } catch (error: any) {
-      console.error('Error getting business ID from instance:', error)
-      return null
-    }
-  }
 
   private isBusinessOpen(workingHours: any): boolean {
+    // Durante las pruebas, siempre consideramos que está abierto
+    // TODO: Descomentar esta lógica cuando tengas horarios configurados
+    return true
+    
+    /*
     if (!workingHours) return true // Default to open if no hours configured
 
     const now = new Date()
@@ -132,6 +181,7 @@ export class BotService {
     const closeTime = this.timeToMinutes(dayHours.close)
 
     return currentTime >= openTime && currentTime <= closeTime
+    */
   }
 
   private timeToMinutes(timeString: string): number {
@@ -139,82 +189,282 @@ export class BotService {
     return (hours || 0) * 60 + (minutes || 0)
   }
 
-  private generateResponse(input: string, personality: BotPersonality, business: BusinessInfo, _customerNumber: string): string {
+  private async generateResponse(input: string, personality: BotPersonality, business: BusinessInfo, customerNumber: string, customerName?: string, context?: ConversationContext): Promise<string> {
     const lowerInput = input.toLowerCase()
 
-    // Welcome keywords
-    if (lowerInput.includes('hola') || lowerInput.includes('buenas') || lowerInput.includes('buenos días') || lowerInput.includes('buenas tardes')) {
-      return personality.welcome_message
+    // Extract name from message if mentioned
+    let extractedName = customerName
+    const nameMatch = input.match(/(?:soy|me\s+llamo|mi\s+nombre\s+es|a\s+nombre\s+de|nombre\s+de)\s+(\w+)|^(\w+)\s+(?:somos|soy)/i)
+    if (nameMatch) {
+      extractedName = nameMatch[1] || nameMatch[2]
+      // Save the customer with extracted name
+      this.saveCustomer(customerNumber, extractedName, business.id)
     }
 
-    // Reservations
-    if (lowerInput.includes('reserva') || lowerInput.includes('mesa') || lowerInput.includes('booking')) {
-      if (personality.capabilities.includes('reservas')) {
-        return `¡Perfecto! Puedo ayudarte con reservas en ${business.name}. Tenemos disponibilidad para cena y baile. ¿Para qué fecha y cuántas personas necesitas la reserva? También puedes llamarnos al ${business.phone || 'nuestro teléfono'} para confirmar al instante.`
+    // Check if already greeted in this conversation
+    const alreadyGreeted = context?.context_data?.greeted || false
+
+    // Use AI to detect intent and generate natural response
+    const aiResponse = await this.generateAIResponse(input, personality, business, extractedName, alreadyGreeted, context)
+    if (aiResponse) {
+      return aiResponse
+    }
+
+    // Check for multiple intents in the same message (prioritize specific requests)
+    const hasGreeting = lowerInput.includes('hola') || lowerInput.includes('buenas') || lowerInput.includes('buenos días') || lowerInput.includes('buenas tardes')
+    const hasHoursRequest = lowerInput.includes('horario') || lowerInput.includes('hora') || lowerInput.includes('abierto') || lowerInput.includes('cerrado')
+    const hasLocationRequest = lowerInput.includes('ubicacion') || lowerInput.includes('direccion') || lowerInput.includes('donde') || lowerInput.includes('como llegar')
+    const hasContactRequest = lowerInput.includes('contacto') || lowerInput.includes('telefono') || lowerInput.includes('llamar')
+    const hasMenuRequest = lowerInput.includes('menu') || lowerInput.includes('comida') || lowerInput.includes('carta') || lowerInput.includes('platos')
+    const hasLoyaltyRequest = (lowerInput.includes('puntos') || lowerInput.includes('fidelidad') || lowerInput.includes('loyalty')) && 
+                             !lowerInput.includes('precio') && !lowerInput.includes('costo') && !lowerInput.includes('cuanto sale') && !lowerInput.includes('cuanto cuesta')
+    console.log(`🔍 DEBUG: lowerInput="${lowerInput}", hasLoyaltyRequest=${hasLoyaltyRequest}`)
+    const hasPriceRequest = (lowerInput.includes('precio') || lowerInput.includes('costo') || 
+                           (lowerInput.includes('cuanto') && !lowerInput.includes('puntos'))) &&
+                           !hasLoyaltyRequest
+    
+    // Reservation detection: only if explicitly mentions reservation keywords AND NOT asking about other things
+    const hasReservationKeywords = lowerInput.includes('reserva') || lowerInput.includes('mesa') || lowerInput.includes('booking')
+    const hasReservationIntent = (lowerInput.includes('quisiera') || lowerInput.includes('quiero')) && 
+                               (hasReservationKeywords || lowerInput.includes('reservar'))
+    const hasReservation = hasReservationKeywords || hasReservationIntent
+    const hasReservationDetails = this.isReservationDetails(lowerInput)
+
+    // Check if already greeted in this conversation (avoid repeated greetings)
+    // alreadyGreeted already declared above
+
+    // PRIORITY ORDER: Specific requests take priority over greetings
+    
+    // Hours request (highest priority for information requests)
+    if (hasHoursRequest) {
+      const greetingPrefix = hasGreeting && !alreadyGreeted && extractedName ? `¡Hola ${extractedName}! ` : 
+                           hasGreeting && !alreadyGreeted ? '¡Hola! ' : ''
+      const response = this.generateBusinessHoursResponse(business)
+      return greetingPrefix + response
+    }
+
+    // Location request
+    if (hasLocationRequest) {
+      const greetingPrefix = hasGreeting && !alreadyGreeted && extractedName ? `¡Hola ${extractedName}! ` : 
+                           hasGreeting && !alreadyGreeted ? '¡Hola! ' : ''
+      const response = `📍 **¡Acá estamos!**
+
+🏠 ${business.address || 'Dirección no configurada'}
+🗺️ Fácil de llegar
+
+🚗 Tenemos estacionamiento propio
+🚌 Llegás fácil en colectivo
+
+¿Necesitás que te ayude con algo más?`
+      return greetingPrefix + response
+    }
+
+    // Contact request  
+    if (hasContactRequest) {
+      const greetingPrefix = hasGreeting && !alreadyGreeted && extractedName ? `¡Hola ${extractedName}! ` : 
+                           hasGreeting && !alreadyGreeted ? '¡Hola! ' : ''
+      const response = `📞 **¡Contactanos cuando quieras!**
+
+📱 WhatsApp: ${business.phone || 'No configurado'}
+📧 Email: ${business.email || 'No configurado'}
+📍 ${business.address || 'Dirección no configurada'}
+
+También podés seguir escribiendo acá que te contesto al toque. ¿En qué más te ayudo?`
+      return greetingPrefix + response
+    }
+
+    // Loyalty points request (before prices!)
+    if (hasLoyaltyRequest) {
+      console.log('🎯 Loyalty request detected for customer:', customerNumber)
+      if (personality.capabilities.includes('puntos')) {
+        const greetingPrefix = hasGreeting && !alreadyGreeted && extractedName ? `¡Hola ${extractedName}! ` : 
+                             hasGreeting && !alreadyGreeted ? '¡Hola! ' : ''
+        
+        console.log('🔍 Calling getLoyaltyPointsResponse...')
+        // Try to get actual points if we have customer info
+        const loyaltyResponse = await this.getLoyaltyPointsResponse(customerNumber, business.id, greetingPrefix)
+        console.log('📊 Loyalty response received:', loyaltyResponse ? 'SUCCESS' : 'NULL')
+        if (loyaltyResponse) {
+          return loyaltyResponse
+        }
+        
+        console.log('⚠️ Using fallback response - customer not found or error occurred')
+        // Fallback if customer not found
+        const response = `🎁 **¡Sos parte de nuestro club!**
+
+Con cada consumo sumás puntos que podés canjear por:
+• Descuentos en tu próxima visita
+• Tragos gratis  
+• Entradas sin cargo para el baile
+
+Decime tu número o nombre y te consulto cuántos puntos tenés.`
+        return greetingPrefix + response
       }
+    }
+
+    // Menu request
+    if (hasMenuRequest) {
+      const greetingPrefix = hasGreeting && !alreadyGreeted && extractedName ? `¡Hola ${extractedName}! ` : 
+                           hasGreeting && !alreadyGreeted ? '¡Hola! ' : ''
+      const response = `🍽️ **¡Nuestra carta está buenísima!**
+
+🥩 Especialidades: Asados, parrilla, empanadas mendocinas
+🍕 Pizzas artesanales con masa madre
+🍸 Tragos de autor y cervezas artesanales
+🧀 Picadas para compartir
+
+¿Querés hacer una reserva para venir a probar? Te ayudo al toque.`
+      return greetingPrefix + response
+    }
+
+    // Price request
+    if (hasPriceRequest) {
+      const greetingPrefix = hasGreeting && !alreadyGreeted && extractedName ? `¡Hola ${extractedName}! ` : 
+                           hasGreeting && !alreadyGreeted ? '¡Hola! ' : ''
+      const response = `💰 **Precios súper accesibles:**
+
+🍽️ **Para cenar:** $15.000 - $30.000 por persona
+🎉 **Entrada baile:** $8.000 (incluye un trago)
+🍸 **Tragos:** desde $4.000
+🍕 **Pizzas:** $8.000 - $12.000
+
+¡Aceptamos efectivo, débito y crédito! ¿Hacemos la reserva?`
+      return greetingPrefix + response
+    }
+
+    // If both greeting and reservation request, prioritize reservation but acknowledge greeting
+    if (hasGreeting && (hasReservation || hasReservationDetails)) {
+      if (!alreadyGreeted) {
+        const greetingPrefix = extractedName ? `¡Hola ${extractedName}! ` : '¡Hola! '
+        const presentation = `Soy ${personality.bot_name || 'el asistente'} de ${business.name}. `
+        const reservationResponse = await this.processReservationDetails(input, business, customerNumber, extractedName, context)
+        
+        // If the reservation response starts with "¡Dale!" or similar, modify it to flow better
+        if (reservationResponse.startsWith('¡Dale!') || reservationResponse.startsWith('¡Bárbaro!')) {
+          return greetingPrefix + presentation + 'Dale, ' + reservationResponse.substring(reservationResponse.indexOf(' ') + 1)
+        } else {
+          return greetingPrefix + presentation + reservationResponse
+        }
+      } else {
+        const reservationResponse = await this.processReservationDetails(input, business, customerNumber, extractedName, context)
+        return reservationResponse
+      }
+    }
+
+    // If only greeting and hasn't been greeted before
+    if (hasGreeting && !alreadyGreeted) {
+      const greeting = extractedName ? `¡Hola ${extractedName}! ` : '¡Hola! '
+      return greeting + `Soy ${personality.bot_name || 'el asistente virtual'} de ${business.name}. ¿En qué te puedo ayudar hoy?`
+    }
+
+    // If only greeting but already greeted before, just acknowledge briefly
+    if (hasGreeting && alreadyGreeted) {
+      return `¡Hola de nuevo! ¿En qué más te puedo ayudar?`
+    }
+
+    // If reservation request without details
+    if (hasReservation && !hasReservationDetails) {
+      if (personality.capabilities.includes('reservas')) {
+        return `¡Dale! Te ayudo con la reserva para ${business.name}. 
+
+Para confirmar tu reserva necesito:
+📅 ¿Para qué día la querés?
+👥 ¿Cuántas personas van a ser?
+🍽️ ¿Es para cenar o para el baile?
+
+Decime los datos y te la confirmo al toque.`
+      }
+    }
+
+    // Advanced reservation processing with specific details
+    if (hasReservationDetails) {
+      return await this.processReservationDetails(input, business, customerNumber, extractedName, context)
     }
 
     // Business hours
     if (lowerInput.includes('horario') || lowerInput.includes('hora') || lowerInput.includes('abierto') || lowerInput.includes('cerrado')) {
-      const hours = business.working_hours
-      if (hours) {
-        let response = `Nuestros horarios de atención son:\n`
-        const days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
-        const dayNames = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo']
-        
-        days.forEach((day, index) => {
-          const dayHours = hours[day]
-          if (dayHours?.closed) {
-            response += `📅 ${dayNames[index]}: Cerrado\n`
-          } else if (dayHours?.open && dayHours?.close) {
-            response += `📅 ${dayNames[index]}: ${dayHours.open} - ${dayHours.close}\n`
-          }
-        })
-        return response
-      } else {
-        return `Para conocer nuestros horarios, puedes contactarnos al ${business.phone || 'nuestro teléfono'}.`
-      }
+      return this.generateBusinessHoursResponse(business)
     }
 
     // Location
     if (lowerInput.includes('ubicacion') || lowerInput.includes('direccion') || lowerInput.includes('donde') || lowerInput.includes('como llegar')) {
-      return `📍 Nos encontramos en: ${business.address || 'Consulta nuestra dirección llamando al teléfono'}\n📞 Teléfono: ${business.phone || 'Teléfono no configurado'}`
+      return `📍 **¡Acá estamos!**
+
+🏠 ${business.address || 'Dirección no configurada'}
+🗺️ Fácil de llegar
+
+🚗 Tenemos estacionamiento propio
+🚌 Llegás fácil en colectivo
+
+¿Necesitás que te ayude con algo más?`
     }
 
-    // Loyalty points
-    if (lowerInput.includes('puntos') || lowerInput.includes('fidelidad') || lowerInput.includes('loyalty')) {
-      if (personality.capabilities.includes('puntos')) {
-        return `🎁 ¡Tenemos un increíble programa de fidelidad! Ganas puntos con cada consumo y puedes canjearlos por descuentos y beneficios especiales. Para consultar tus puntos, proporciónanos tu número de teléfono o nombre.`
-      }
-    }
 
     // Menu
     if (lowerInput.includes('menu') || lowerInput.includes('comida') || lowerInput.includes('carta') || lowerInput.includes('platos')) {
-      return `🍽️ Tenemos una deliciosa carta con especialidades de la casa. ${business.specialties?.length ? `Nuestras especialidades incluyen: ${business.specialties.join(', ')}.` : ''} Te recomiendo visitarnos para que puedas disfrutar de todas nuestras opciones o hacer una reserva.`
+      return `🍽️ **¡Nuestra carta está buenísima!**
+
+🥩 Especialidades: Asados, parrilla, empanadas mendocinas
+🍕 Pizzas artesanales con masa madre
+🍸 Tragos de autor y cervezas artesanales
+🧀 Picadas para compartir
+
+¿Querés hacer una reserva para venir a probar? Te ayudo al toque.`
     }
 
     // Prices
-    if (lowerInput.includes('precio') || lowerInput.includes('costo') || lowerInput.includes('cuanto')) {
-      return `💰 Los precios varían según lo que elijas. Para cenas, el promedio por persona está entre $15,000 - $25,000. Para eventos de baile, la entrada general es de $8,000. Para información más específica, no dudes en consultarnos.`
+    if (lowerInput.includes('precio') || lowerInput.includes('costo') || lowerInput.includes('cuanto') || lowerInput.includes('valor')) {
+      return `💰 **Precios súper accesibles:**
+
+🍽️ **Para cenar:** $15.000 - $30.000 por persona
+🎉 **Entrada baile:** $8.000 (incluye un trago)
+🍸 **Tragos:** desde $4.000
+🍕 **Pizzas:** $8.000 - $12.000
+
+¡Aceptamos efectivo, débito y crédito! ¿Hacemos la reserva?`
     }
 
     // Events
     if (lowerInput.includes('evento') || lowerInput.includes('baile') || lowerInput.includes('fiesta') || lowerInput.includes('show')) {
-      return `🎉 ¡Organizamos eventos increíbles! Tenemos noches de baile, espectáculos y celebraciones especiales. ¿Te interesa algún tipo de evento en particular? Puedo darte más detalles.`
+      return `🎉 **¡Los findes son una locura acá!**
+
+🎵 Viernes: Música en vivo + DJ
+💃 Sábados: Noche de baile hasta las 4am
+🎊 Eventos especiales todos los meses
+
+¿Te copa venir este finde? Te hago la reserva ahora mismo.`
     }
 
     // Contact
     if (lowerInput.includes('contacto') || lowerInput.includes('telefono') || lowerInput.includes('llamar')) {
-      return `📞 Puedes contactarnos:\n• Teléfono: ${business.phone || 'Consultar teléfono'}\n• Email: ${business.email || 'Consultar email'}\n• También puedes seguir escribiendo aquí, estoy para ayudarte.`
+      return `📞 **¡Contactanos cuando quieras!**
+
+📱 WhatsApp: ${business.phone || 'No configurado'}
+📧 Email: ${business.email || 'No configurado'}
+📍 ${business.address || 'Dirección no configurada'}
+
+También podés seguir escribiendo acá que te contesto al toque. ¿En qué más te ayudo?`
     }
 
     // Goodbye
     if (lowerInput.includes('gracias') || lowerInput.includes('chau') || lowerInput.includes('adiós') || lowerInput.includes('hasta luego')) {
-      return personality.goodbye_message
+      return `¡Gracias a vos! 😊 
+
+Nos vemos pronto en ${business.name}. ¡Que tengas un día bárbaro!
+
+¡Chau! 👋`
     }
 
-    // Default fallback
-    return personality.fallback_message || `Disculpa, no entendí bien tu consulta. Puedo ayudarte con:\n• Reservas para cena y baile\n• Información sobre horarios y ubicación\n• Consultas sobre nuestro programa de puntos\n• Información sobre eventos\n\n¿En qué más puedo asistirte?`
+    // Default fallback - much more Argentine
+    return `¡Ey! No entendí bien lo que me escribiste. 
+
+Pero tranqui, te puedo ayudar con:
+🍽️ Reservas para cenar o para el baile
+📍 Info sobre horarios y ubicación  
+🎁 Consultar tus puntos de fidelidad
+💰 Precios y promociones
+
+¿Con qué te ayudo?`
   }
 
   private async logConversation(businessId: string, customerNumber: string, customerMessage: string, botResponse: string): Promise<void> {
@@ -232,13 +482,945 @@ export class BotService {
     }
   }
 
-  async sendMessage(instanceName: string, customerNumber: string, message: string): Promise<boolean> {
+  private isReservationDetails(input: string): boolean {
+    const lowerInput = input.toLowerCase()
+    
+    // Don't treat phone numbers as reservation details
+    if (/^\d{7,15}$/.test(input.trim()) || /^[\+\-\s\d]{8,20}$/.test(input.trim())) {
+      return false
+    }
+    
+    const reservationKeywords = [
+      'viernes', 'sábado', 'sabado', 'domingo', 'lunes', 'martes', 'miércoles', 'miercoles', 'jueves',
+      'mañana', 'manana', 'hoy', 'pasado mañana', 'fin de semana', 'que viene', 'próximo', 'proximo', 'este',
+      'personas', 'gente', 'somos', 'vamos a ser', 'para',
+      'cena', 'cenar', 'baile', 'bailar', 'fiesta',
+      'para el', 'para la', 'el día', 'la noche', 'a las', ':00', 'hs'
+    ]
+
+    // Only check for small numbers (1-2 digits) in reservation context, not standalone long numbers
+    const smallNumberPattern = /\b([1-9]|1[0-9]|2[0-3])\b(?=\s*(personas?|gente|hs|horas?))/i
+    const timePatterns = /\d{1,2}:\d{2}|\d{1,2}\s*hs|\d{1,2}\s*horas?|a\s*las\s*\d{1,2}/i
+    
+    return reservationKeywords.some(keyword => lowerInput.includes(keyword)) || 
+           smallNumberPattern.test(input) ||
+           timePatterns.test(input)
+  }
+
+  private async processReservationDetails(input: string, business: BusinessInfo, customerNumber: string, customerName?: string, context?: ConversationContext): Promise<string> {
+    // Use context information as base, then check current message for new info
+    let day = context?.reservation_day || ''
+    let time = context?.reservation_time || ''
+    let people = context?.reservation_people?.toString() || ''
+    let type = context?.reservation_type || ''
+    let name = context?.customer_name || customerName || ''
+
+    const lowerInput = input.toLowerCase()
+    
+    
+    // Extract day information from current message (overrides context)
+    if (lowerInput.includes('lunes que viene') || lowerInput.includes('próximo lunes') || lowerInput.includes('proximo lunes')) {
+      day = 'lunes que viene'
+    } else if (lowerInput.includes('este lunes') || lowerInput.includes('lunes')) {
+      day = 'lunes'
+    } else if (lowerInput.includes('martes que viene') || lowerInput.includes('próximo martes') || lowerInput.includes('proximo martes')) {
+      day = 'martes que viene'
+    } else if (lowerInput.includes('este martes') || lowerInput.includes('martes')) {
+      day = 'martes'
+    } else if (lowerInput.includes('miércoles que viene') || lowerInput.includes('miercoles que viene') || lowerInput.includes('próximo miércoles') || lowerInput.includes('proximo miercoles')) {
+      day = 'miércoles que viene'
+    } else if (lowerInput.includes('este miércoles') || lowerInput.includes('este miercoles') || lowerInput.includes('miércoles') || lowerInput.includes('miercoles')) {
+      day = 'miércoles'
+    } else if (lowerInput.includes('jueves que viene') || lowerInput.includes('próximo jueves') || lowerInput.includes('proximo jueves')) {
+      day = 'jueves que viene'
+    } else if (lowerInput.includes('este jueves') || lowerInput.includes('jueves')) {
+      day = 'jueves'
+    } else if (lowerInput.includes('viernes que viene') || lowerInput.includes('próximo viernes') || lowerInput.includes('proximo viernes')) {
+      day = 'viernes que viene'
+    } else if (lowerInput.includes('este viernes') || lowerInput.includes('viernes')) {
+      day = 'viernes'
+    } else if (lowerInput.includes('sábado que viene') || lowerInput.includes('sabado que viene') || lowerInput.includes('próximo sábado') || lowerInput.includes('proximo sabado')) {
+      day = 'sábado que viene'
+    } else if (lowerInput.includes('este sábado') || lowerInput.includes('este sabado') || lowerInput.includes('sábado') || lowerInput.includes('sabado')) {
+      day = 'sábado'
+    } else if (lowerInput.includes('domingo que viene') || lowerInput.includes('próximo domingo') || lowerInput.includes('proximo domingo')) {
+      day = 'domingo que viene'
+    } else if (lowerInput.includes('este domingo') || lowerInput.includes('domingo')) {
+      day = 'domingo'
+    } else if (lowerInput.includes('mañana')) {
+      day = 'mañana'
+    } else if (lowerInput.includes('hoy')) {
+      day = 'hoy'
+    }
+
+    // Extract time information from current message (overrides context)
+    const timeMatch = input.match(/(\d{1,2}):(\d{2})|(\d{1,2})\s*hs|a\s*las\s*(\d{1,2})/i)
+    if (timeMatch) {
+      if (timeMatch[1] && timeMatch[2]) {
+        time = `${timeMatch[1]}:${timeMatch[2]}hs`
+      } else if (timeMatch[3]) {
+        time = `${timeMatch[3]}hs`
+      } else if (timeMatch[4]) {
+        time = `${timeMatch[4]}hs`
+      }
+    }
+
+    // Extract number of people from current message (overrides context)
+    const peopleMatch = input.match(/(\d+)\s*personas?|somos\s*(\d+)|para\s*(\d+)|(\d+)\s*gente/i)
+    if (peopleMatch) {
+      people = peopleMatch[1] || peopleMatch[2] || peopleMatch[3] || peopleMatch[4]
+    }
+
+    // Extract type from current message (overrides context)
+    if (lowerInput.includes('cena') || lowerInput.includes('cenar')) {
+      type = 'cena'
+    } else if (lowerInput.includes('baile') || lowerInput.includes('bailar')) {
+      type = 'baile'
+    } else if (time && !type) {
+      // Auto-detect based on time only if not explicitly mentioned
+      const hour = parseInt(time.split(':')[0])
+      if (hour >= 20 && hour <= 23) {
+        type = 'cena'
+      } else if (hour >= 23 || hour <= 4) {
+        type = 'baile'
+      }
+    }
+
+    // Generate intelligent response
+    if (day && type) {
+      // Has day and type, check if we need people count
+      if (people) {
+        // Check if we have the customer's name
+        if (!name || name === 'Cliente') {
+          return `¡Perfecto! Tengo todos los datos de tu reserva:
+
+📅 **${day.toUpperCase()}** ${time ? `a las ${time}` : ''}
+👥 **${people} personas**  
+🍽️ **Para ${type}**
+
+Para confirmarla solo me falta tu nombre. ¿Cómo te llamás?`
+        }
+        
+        // Complete reservation information - save to database
+        const reservationSaved = await this.saveReservation(business.id, customerNumber, name, day, time, type, people)
+        
+        if (reservationSaved) {
+          return `¡Bárbaro ${name}! Tengo anotada tu reserva:
+
+📅 **${day.toUpperCase()}** ${time ? `a las ${time}` : ''}
+👥 **${people} personas**
+🍽️ **Para ${type}**
+
+✅ **Tu reserva está CONFIRMADA**
+
+A nombre de: ${name}
+📱 Teléfono: ${customerNumber}
+
+Te vamos a estar esperando en ${business.name}. ¡Nos vemos el ${day}! 🎉`
+        } else {
+          return `¡Dale ${name ? name : ''}! Tengo todos los datos de tu reserva pero hubo un problema al confirmarla en el sistema. 
+
+Por favor contactanos directamente para asegurar tu mesa:
+📱 ${business.phone || 'WhatsApp'}
+
+Disculpas por el inconveniente.`
+        }
+      } else {
+        // Missing people count
+        return `¡Dale ${name ? name : ''}! Ya tengo que es para **${day}** ${time ? `a las ${time}` : ''} **para ${type}**.
+
+Solo me falta saber: **¿Cuántas personas van a ser?**
+
+Y te confirmo la reserva al toque.`
+      }
+    }
+    else if (day || people || type || time) {
+      // Partial information, ask for missing details
+      let missing = []
+      if (!day) missing.push('📅 ¿Para qué día?')
+      if (!people) missing.push('👥 ¿Cuántas personas?')
+      if (!type && !time) missing.push('🍽️ ¿Para cenar o para el baile?')
+
+      let hasInfo = []
+      if (day) hasInfo.push(`el día (${day})`)
+      if (people) hasInfo.push(`la cantidad (${people} personas)`)
+      if (type) hasInfo.push(`que es para ${type}`)
+      if (time && !type) hasInfo.push(`el horario (${time})`)
+
+      return `¡Dale ${name ? name : ''}! Ya tengo ${hasInfo.join(' y ')}.
+
+Necesito que me confirmes:
+${missing.join('\n')}
+
+Así te confirmo la reserva al toque.`
+    }
+    else {
+      // No clear reservation info found
+      return `¡Dale ${name ? name : ''}! Te ayudo con la reserva. Para confirmarla necesito:
+
+📅 ¿Para qué día la querés? (ej: "viernes", "mañana", "sábado")
+👥 ¿Cuántas personas van a ser?
+🍽️ ¿Es para cenar o para el baile?
+
+Contame y te la confirmo enseguida.`
+    }
+  }
+
+  private async saveCustomer(phoneNumber: string, name: string, businessId?: string): Promise<string | null> {
     try {
-      await this.evolutionApi.sendMessage(instanceName, customerNumber, message)
+      // Try to save or update customer in database
+      const customerData = {
+        phone: phoneNumber,
+        name: name,
+        business_id: businessId,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      }
+      
+      const { data, error } = await supabase.from('customers').upsert(customerData, {
+        onConflict: 'business_id,phone'
+      }).select('id').single()
+
+      if (error) {
+        console.error('Error saving customer:', error)
+        return null
+      }
+      return data?.id || null
+    } catch (error: any) {
+      console.error('Error saving customer:', error)
+      return null
+    }
+  }
+
+  private async saveReservation(businessId: string, customerPhone: string, customerName: string, day: string, time: string, type: string, people: string): Promise<boolean> {
+    try {
+      // First, ensure customer exists and get their ID
+      const customerId = await this.saveCustomer(customerPhone, customerName, businessId)
+      if (!customerId) {
+        console.error('Could not create/find customer for reservation')
+        return false
+      }
+
+      // Parse the reservation details
+      const reservationDate = this.parseReservationDate(day, time)
+      if (!reservationDate) {
+        return false
+      }
+
+      // Save the reservation
+      const reservationData = {
+        business_id: businessId,
+        customer_id: customerId,
+        reservation_type: type,
+        reservation_date: reservationDate.toISOString(),
+        party_size: parseInt(people),
+        status: 'confirmed',
+        phone: customerPhone,
+        customer_name: customerName,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      }
+      
+      const { data, error } = await supabase.from('reservations').insert(reservationData).select('id').single()
+
+      if (error) {
+        console.error('Error saving reservation:', error)
+        return false
+      }
       return true
     } catch (error: any) {
-      console.error('Error sending message via bot service:', error)
+      console.error('Error saving reservation:', error)
       return false
     }
   }
+
+  private parseReservationDate(day: string, time: string): Date | null {
+    try {
+      const now = new Date()
+      let targetDate = new Date()
+
+      // Parse day
+      switch (day.toLowerCase()) {
+        case 'hoy':
+          targetDate = new Date(now)
+          break
+        case 'mañana':
+        case 'manana':
+          targetDate = new Date(now)
+          targetDate.setDate(now.getDate() + 1)
+          break
+        case 'lunes':
+          targetDate = this.getNextWeekday(now, 1) // Monday = 1
+          break
+        case 'lunes que viene':
+          targetDate = this.getNextWeekday(now, 1, true) // Next Monday
+          break
+        case 'martes':
+          targetDate = this.getNextWeekday(now, 2) // Tuesday = 2
+          break
+        case 'martes que viene':
+          targetDate = this.getNextWeekday(now, 2, true) // Next Tuesday
+          break
+        case 'miércoles':
+        case 'miercoles':
+          targetDate = this.getNextWeekday(now, 3) // Wednesday = 3
+          break
+        case 'miércoles que viene':
+        case 'miercoles que viene':
+          targetDate = this.getNextWeekday(now, 3, true) // Next Wednesday
+          break
+        case 'jueves':
+          targetDate = this.getNextWeekday(now, 4) // Thursday = 4
+          break
+        case 'jueves que viene':
+          targetDate = this.getNextWeekday(now, 4, true) // Next Thursday
+          break
+        case 'viernes':
+          targetDate = this.getNextWeekday(now, 5) // Friday = 5
+          break
+        case 'viernes que viene':
+          targetDate = this.getNextWeekday(now, 5, true) // Next Friday
+          break
+        case 'sábado':
+        case 'sabado':
+          targetDate = this.getNextWeekday(now, 6) // Saturday = 6
+          break
+        case 'sábado que viene':
+        case 'sabado que viene':
+          targetDate = this.getNextWeekday(now, 6, true) // Next Saturday
+          break
+        case 'domingo':
+          targetDate = this.getNextWeekday(now, 0) // Sunday = 0
+          break
+        case 'domingo que viene':
+          targetDate = this.getNextWeekday(now, 0, true) // Next Sunday
+          break
+        default:
+          console.error('Unknown day format:', day)
+          return null
+      }
+
+      // Parse time - handle formats like "20hs", "20:00hs", "8pm"
+      const timeMatch = time.match(/(\d{1,2})(?::(\d{2}))?(?:hs|:00hs)?/)
+      if (timeMatch) {
+        const hours = parseInt(timeMatch[1])
+        const minutes = parseInt(timeMatch[2] || '0')
+        targetDate.setHours(hours, minutes, 0, 0)
+      } else {
+        console.error('Unknown time format:', time)
+        return null
+      }
+
+      return targetDate
+    } catch (error) {
+      console.error('Error parsing reservation date:', error)
+      return null
+    }
+  }
+
+  private getNextWeekday(fromDate: Date, targetWeekday: number, forceNext: boolean = false): Date {
+    const result = new Date(fromDate)
+    const currentWeekday = fromDate.getDay()
+    
+    let daysToAdd = targetWeekday - currentWeekday
+    
+    if (daysToAdd <= 0 || forceNext) {
+      daysToAdd += 7
+    }
+    
+    result.setDate(fromDate.getDate() + daysToAdd)
+    return result
+  }
+
+  private isNewConversation(messageText: string, existingContext: ConversationContext | null): boolean {
+    if (!existingContext) {
+      return false // No existing context, so not really "new"
+    }
+
+    const lowerMessage = messageText.toLowerCase()
+    
+    // Check if message contains greeting
+    const hasGreeting = lowerMessage.includes('hola') || lowerMessage.includes('buenas') || lowerMessage.includes('buenos días') || lowerMessage.includes('buenas tardes')
+    
+    // Check if message has complete reservation data (name + details) OR is just providing a name when context has reservation data
+    const hasCompleteReservationData = (
+      (lowerMessage.includes('nombre') || lowerMessage.includes('a nombre de') || lowerMessage.match(/^\w+\s+(?:somos|para)/)) &&
+      (lowerMessage.includes('persona') || lowerMessage.includes('gente') || /\d+/.test(lowerMessage)) &&
+      (lowerMessage.includes('lunes') || lowerMessage.includes('martes') || lowerMessage.includes('miércoles') || lowerMessage.includes('miercoles') || lowerMessage.includes('jueves') || lowerMessage.includes('viernes') || lowerMessage.includes('sábado') || lowerMessage.includes('sabado') || lowerMessage.includes('domingo') || lowerMessage.includes('hoy') || lowerMessage.includes('mañana') || lowerMessage.includes('manana'))
+    )
+    
+    // Check if it's just providing a name for existing reservation context
+    const isProvidingNameForReservation = (
+      existingContext && 
+      (existingContext.reservation_day || existingContext.reservation_people || existingContext.reservation_type) &&
+      (lowerMessage.match(/^soy\s+\w+$/) || lowerMessage.match(/^me\s+llamo\s+\w+$/))
+    )
+    
+    // Check if context has any reservation data
+    const contextHasReservationData = existingContext.reservation_day || 
+                                     existingContext.reservation_time || 
+                                     existingContext.reservation_type || 
+                                     existingContext.reservation_people
+
+    // Check if enough time has passed (more than 5 minutes since last update)
+    const lastUpdate = new Date(existingContext.updated_at || existingContext.created_at || '')
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000)
+    const hasBeenLongTime = lastUpdate < fiveMinutesAgo
+
+    // It's a new conversation if:
+    // 1. Has complete reservation data in a single message (new reservation)
+    // 2. Has greeting AND complete reservation data AND existing context has reservation data
+    // 3. Has been more than 5 minutes since last update AND has greeting
+    // 4. NEVER reset if just providing name for existing reservation
+    return (hasCompleteReservationData && !isProvidingNameForReservation) ||
+           (hasGreeting && hasCompleteReservationData && contextHasReservationData && !isProvidingNameForReservation) ||
+           (hasBeenLongTime && hasGreeting && !isProvidingNameForReservation)
+  }
+
+  private async clearConversationContext(customerPhone: string, businessId: string): Promise<void> {
+    try {
+      await supabase.from('conversation_context')
+        .delete()
+        .eq('customer_phone', customerPhone)
+        .eq('business_id', businessId)
+    } catch (error: any) {
+      console.error('Error clearing conversation context:', error)
+    }
+  }
+
+  private async generateAIResponse(input: string, personality: BotPersonality, business: BusinessInfo, customerName?: string, alreadyGreeted?: boolean, context?: ConversationContext): Promise<string | null> {
+    try {
+      // Don't use AI for reservation details - let specific logic handle it
+      if (this.isReservationDetails(input.toLowerCase())) {
+        return null
+      }
+      
+      // Prepare business information for AI
+      const businessInfo = this.formatBusinessInfoForAI(business)
+      const conversationHistory = context?.context_data?.messages?.slice(-3) || [] // Last 3 messages for context
+      
+      const prompt = `Eres ${personality.bot_name}, ${personality.personality_description}
+
+INFORMACIÓN DEL NEGOCIO:
+${businessInfo}
+
+PERSONALIDAD: ${personality.tone}
+CLIENTE: ${customerName || 'Cliente'}
+YA SE SALUDARON: ${alreadyGreeted ? 'Sí' : 'No'}
+
+HISTORIAL RECIENTE:
+${conversationHistory.map(m => `- ${m.message} (${m.intent})`).join('\n')}
+
+INSTRUCCIONES:
+- Responde de forma natural y argentina como ${personality.bot_name}
+- Si preguntan por horarios, ubicación, contacto, precios o menú, usa la información del negocio
+- Si es un saludo y ya se saludaron antes, sé breve
+- Si mencionan reserva, mesa o quieren reservar, indica que necesitas: día, hora, cantidad de personas y tipo (cena/baile)
+- Usa emojis apropiados
+- Sé conversacional y amigable
+- NO inventes información que no tienes
+
+MENSAJE DEL CLIENTE: "${input}"
+
+RESPUESTA (máximo 300 caracteres):`
+
+      // Use a simple AI completion (you can use OpenAI API, Anthropic, or any AI service)
+      // For now, I'll implement a fallback that returns null to use the rule-based system
+      // But you can integrate with your preferred AI service here
+      
+      const aiResponse = await this.callAIService(prompt)
+      return aiResponse
+      
+    } catch (error) {
+      console.error('Error generating AI response:', error)
+      return null // Fallback to rule-based system
+    }
+  }
+
+  private async callAIService(prompt: string): Promise<string | null> {
+    try {
+      // Use a simple local AI logic for now (you can replace with external API later)
+      // This is a lightweight implementation that mimics AI behavior
+      return this.generateSmartResponse(prompt)
+    } catch (error) {
+      console.error('AI service error:', error)
+      return null
+    }
+  }
+
+  private generateSmartResponse(prompt: string): string | null {
+    // Extract the customer message from the prompt
+    const messageMatch = prompt.match(/MENSAJE DEL CLIENTE: "(.+)"/)
+    if (!messageMatch) return null
+    
+    const message = messageMatch[1].toLowerCase()
+    
+    // Extract business info
+    const businessName = prompt.match(/NOMBRE: (.+)/)?.[1] || 'el negocio'
+    const botName = prompt.match(/Eres ([^,]+),/)?.[1] || 'el asistente'
+    const alreadyGreeted = prompt.includes('YA SE SALUDARON: Sí')
+    const customerName = prompt.match(/CLIENTE: (.+)/)?.[1]
+    const isCustomerNamed = customerName && customerName !== 'Cliente'
+    
+    // Detect intent and generate natural response
+    if (message.includes('horario') || message.includes('hora') || message.includes('abierto') || message.includes('cerrado')) {
+      const hoursInfo = this.extractHoursFromPrompt(prompt)
+      const greeting = message.includes('hola') && !alreadyGreeted ? 
+        (isCustomerNamed ? `¡Hola ${customerName}! ` : '¡Hola! ') : ''
+      return `${greeting}📅 Nuestros horarios son:\n${hoursInfo}\n¿Necesitás algo más?`
+    }
+    
+    if (message.includes('ubicacion') || message.includes('direccion') || message.includes('donde')) {
+      const address = prompt.match(/DIRECCIÓN: (.+)/)?.[1] || 'No tenemos dirección configurada'
+      const greeting = message.includes('hola') && !alreadyGreeted ? 
+        (isCustomerNamed ? `¡Hola ${customerName}! ` : '¡Hola! ') : ''
+      return `${greeting}📍 Estamos en ${address}. ¡Te esperamos!`
+    }
+    
+    if (message.includes('contacto') || message.includes('telefono') || message.includes('llamar')) {
+      const phone = prompt.match(/TELÉFONO: (.+)/)?.[1] || 'No configurado'
+      const email = prompt.match(/EMAIL: (.+)/)?.[1] || 'No configurado'
+      const greeting = message.includes('hola') && !alreadyGreeted ? 
+        (isCustomerNamed ? `¡Hola ${customerName}! ` : '¡Hola! ') : ''
+      return `${greeting}📞 Podes contactarnos:\n📱 WhatsApp: ${phone}\n📧 Email: ${email}`
+    }
+    
+    // Check for loyalty points BEFORE prices (priority!) - but let main logic handle detailed response
+    if ((message.includes('puntos') || message.includes('fidelidad') || message.includes('loyalty')) && 
+        !message.includes('precio') && !message.includes('costo') && !message.includes('cuanto sale') && !message.includes('cuanto cuesta')) {
+      // Return null to let main logic handle loyalty points with actual data from database
+      return null
+    }
+    
+    if ((message.includes('precio') || message.includes('costo') || message.includes('cuanto')) && 
+        !message.includes('puntos') && !message.includes('fidelidad')) {
+      const greeting = message.includes('hola') && !alreadyGreeted ? 
+        (isCustomerNamed ? `¡Hola ${customerName}! ` : '¡Hola! ') : ''
+      return `${greeting}💰 Nuestros precios son súper accesibles:\n🍽️ Cenas: $15.000-$30.000\n🎉 Baile: $8.000\n🍸 Tragos: desde $4.000`
+    }
+    
+    if (message.includes('menu') || message.includes('comida') || message.includes('carta')) {
+      const greeting = message.includes('hola') && !alreadyGreeted ? 
+        (isCustomerNamed ? `¡Hola ${customerName}! ` : '¡Hola! ') : ''
+      return `${greeting}🍽️ Nuestra carta tiene:\n🥩 Asados y parrilla\n🍕 Pizzas artesanales\n🍸 Tragos de autor\n🧀 Picadas para compartir`
+    }
+    
+    // Check if message combines greeting + reservation request
+    const hasGreeting = message.includes('hola') || message.includes('buenas')
+    const hasReservationRequest = message.includes('reserva') || message.includes('mesa') || message.includes('booking') ||
+        (message.includes('quiero') && message.includes('reservar')) || message.includes('quisiera')
+    
+    if (hasGreeting && hasReservationRequest) {
+      // Greeting + reservation in same message - let structured flow handle but with greeting
+      return null // Use structured reservation flow
+    }
+    
+    if (hasGreeting && alreadyGreeted) {
+      return `¡Hola de nuevo! ¿En qué más te puedo ayudar?`
+    }
+    
+    if (hasGreeting && !alreadyGreeted) {
+      const personalGreeting = isCustomerNamed ? `¡Hola ${customerName}! ` : '¡Hola! '
+      return `${personalGreeting}Soy ${botName} de ${businessName}. ¿En qué te puedo ayudar hoy?`
+    }
+    
+    // If it's about reservations only, return null to use the structured flow
+    if (hasReservationRequest) {
+      return null // Use structured reservation flow
+    }
+    
+    // If it contains reservation details, return null to use structured flow
+    if (this.isReservationDetails(message)) {
+      return null // Use structured reservation flow
+    }
+    
+    // Default friendly response
+    return `¡Dale! Soy ${botName} de ${businessName}. Puedo ayudarte con horarios, ubicación, contacto, precios, menú o reservas. ¿Qué necesitás?`
+  }
+
+  private extractHoursFromPrompt(prompt: string): string {
+    const hoursSection = prompt.match(/HORARIOS:\n([\s\S]*?)(?:\n[A-Z]+:|$)/)?.[1]
+    if (!hoursSection) return 'No tenemos horarios configurados'
+    
+    // Only process lines that are actual schedule lines (start with "- ")
+    const lines = hoursSection.split('\n')
+      .filter(line => line.trim() && line.startsWith('- '))
+      .map(line => line.replace('- ', ''))
+    
+    if (lines.length === 0) return 'No tenemos horarios configurados'
+    
+    const openDays = lines.filter(line => !line.includes('CERRADO'))
+    const closedDays = lines.filter(line => line.includes('CERRADO')).map(line => line.split(':')[0])
+    
+    let result = ''
+    if (openDays.length > 0) {
+      result += '🟢 ABIERTO:\n' + openDays.map(day => `- ${day}`).join('\n') + '\n'
+    }
+    if (closedDays.length > 0) {
+      result += '🔴 CERRADO: ' + closedDays.join(', ')
+    }
+    
+    return result
+  }
+
+  private formatBusinessInfoForAI(business: BusinessInfo): string {
+    let info = `NOMBRE: ${business.name}\n`
+    
+    if (business.address) {
+      info += `DIRECCIÓN: ${business.address}\n`
+    }
+    
+    if (business.phone) {
+      info += `TELÉFONO: ${business.phone}\n`
+    }
+    
+    if (business.email) {
+      info += `EMAIL: ${business.email}\n`
+    }
+    
+    if (business.working_hours) {
+      info += `HORARIOS:\n`
+      const hours = business.working_hours
+      const dayNames = {
+        monday: 'Lunes', tuesday: 'Martes', wednesday: 'Miércoles',
+        thursday: 'Jueves', friday: 'Viernes', saturday: 'Sábado', sunday: 'Domingo'
+      }
+      
+      Object.entries(hours).forEach(([day, schedule]: [string, any]) => {
+        const dayName = dayNames[day as keyof typeof dayNames]
+        if (schedule.closed) {
+          info += `- ${dayName}: CERRADO\n`
+        } else {
+          info += `- ${dayName}: ${schedule.open} a ${schedule.close}\n`
+        }
+      })
+    }
+    
+    if (business.description) {
+      info += `DESCRIPCIÓN: ${business.description}\n`
+    }
+    
+    return info
+  }
+
+  private detectIntent(lowerInput: string): string {
+    if (lowerInput.includes('horario') || lowerInput.includes('hora') || lowerInput.includes('abierto') || lowerInput.includes('cerrado')) {
+      return 'horarios'
+    }
+    if (lowerInput.includes('ubicacion') || lowerInput.includes('direccion') || lowerInput.includes('donde') || lowerInput.includes('como llegar')) {
+      return 'ubicacion'
+    }
+    if (lowerInput.includes('contacto') || lowerInput.includes('telefono') || lowerInput.includes('llamar')) {
+      return 'contacto'
+    }
+    if (lowerInput.includes('reserva') || lowerInput.includes('mesa') || lowerInput.includes('booking') || lowerInput.includes('quisiera') || lowerInput.includes('quiero')) {
+      return 'reserva'
+    }
+    if (lowerInput.includes('hola') || lowerInput.includes('buenas') || lowerInput.includes('buenos días') || lowerInput.includes('buenas tardes')) {
+      return 'saludo'
+    }
+    if (lowerInput.includes('gracias') || lowerInput.includes('chau') || lowerInput.includes('adiós')) {
+      return 'despedida'
+    }
+    return 'general'
+  }
+
+  private generateBusinessHoursResponse(business: BusinessInfo): string {
+    if (!business.working_hours) {
+      return `📅 **Horarios de ${business.name}:**
+
+No tenemos horarios configurados en el sistema. 
+Por favor contactanos para más información.`
+    }
+
+    const hours = business.working_hours
+    const dayNames = {
+      monday: 'Lunes',
+      tuesday: 'Martes', 
+      wednesday: 'Miércoles',
+      thursday: 'Jueves',
+      friday: 'Viernes',
+      saturday: 'Sábado',
+      sunday: 'Domingo'
+    }
+
+    let openDays = []
+    let closedDays = []
+
+    Object.entries(hours).forEach(([day, schedule]: [string, any]) => {
+      const dayName = dayNames[day as keyof typeof dayNames]
+      if (schedule.closed) {
+        closedDays.push(dayName)
+      } else {
+        openDays.push(`• **${dayName}**: ${schedule.open} a ${schedule.close}hs`)
+      }
+    })
+
+    let response = `📅 **Horarios de ${business.name}:**\n\n`
+    
+    if (openDays.length > 0) {
+      response += `🟢 **ABIERTO:**\n${openDays.join('\n')}\n\n`
+    }
+    
+    if (closedDays.length > 0) {
+      response += `🔴 **CERRADO:** ${closedDays.join(', ')}\n\n`
+    }
+
+    response += `¿Necesitás algo más?`
+    
+    return response
+  }
+
+  private async getConversationContext(customerPhone: string, businessId: string): Promise<ConversationContext | null> {
+    try {
+      // Clean up expired contexts first
+      await supabase.from('conversation_context')
+        .delete()
+        .lt('expires_at', new Date().toISOString())
+
+      // Get current conversation context
+      const { data, error } = await supabase
+        .from('conversation_context')
+        .select('*')
+        .eq('customer_phone', customerPhone)
+        .eq('business_id', businessId)
+        .single()
+
+      if (error) {
+        // No context exists yet
+        return null
+      }
+
+      return data
+    } catch (error: any) {
+      console.error('Error getting conversation context:', error)
+      return null
+    }
+  }
+
+  private isNameRegistrationMessage(messageText: string, currentCustomerName?: string): boolean {
+    // Only consider it name registration if we don't have a customer name yet
+    if (currentCustomerName && currentCustomerName !== 'Cliente') {
+      return false
+    }
+
+    const lowerMessage = messageText.toLowerCase().trim()
+    
+    // Exclude common greetings and other words that aren't names
+    const excludedWords = ['hola', 'buenas', 'buenos', 'tardes', 'dias', 'noches', 'que', 'tal', 'como', 'estas', 'gracias', 'si', 'no', 'ok', 'bien', 'mal']
+    if (excludedWords.includes(lowerMessage)) {
+      return false
+    }
+    
+    // Common patterns for name registration
+    const namePatterns = [
+      /^soy\s+([a-záéíóúñ]+)$/i,
+      /^me\s+llamo\s+([a-záéíóúñ]+)$/i,
+      /^mi\s+nombre\s+es\s+([a-záéíóúñ]+)$/i,
+      /^([a-záéíóúñ]+)$/i // Just a single name
+    ]
+
+    return namePatterns.some(pattern => pattern.test(messageText)) && 
+           messageText.trim().split(' ').length <= 2 && // Max 2 words for name
+           !excludedWords.includes(lowerMessage.split(' ')[0]) // First word isn't a common word
+  }
+
+  private extractNameFromMessage(messageText: string): string | null {
+    const excludedWords = ['hola', 'buenas', 'buenos', 'tardes', 'dias', 'noches', 'que', 'tal', 'como', 'estas', 'gracias', 'si', 'no', 'ok', 'bien', 'mal']
+    
+    const patterns = [
+      /soy\s+([a-záéíóúñ]+)/i,
+      /me\s+llamo\s+([a-záéíóúñ]+)/i,
+      /mi\s+nombre\s+es\s+([a-záéíóúñ]+)/i,
+      /^([a-záéíóúñ]+)$/i // Just a single name
+    ]
+
+    for (const pattern of patterns) {
+      const match = messageText.match(pattern)
+      if (match && match[1]) {
+        const name = match[1].toLowerCase()
+        // Don't extract if it's a common word/greeting
+        if (excludedWords.includes(name)) {
+          return null
+        }
+        // Capitalize first letter
+        return match[1].charAt(0).toUpperCase() + match[1].slice(1).toLowerCase()
+      }
+    }
+
+    return null
+  }
+
+  private async getLoyaltyPointsResponse(customerPhone: string, businessId: string, greetingPrefix: string = ''): Promise<string | null> {
+    try {
+      console.log(`Getting loyalty points for phone: ${customerPhone}, business: ${businessId}`)
+      
+      // Get customer points directly from database with timeout
+      const customerQuery = supabase
+        .from('customers')
+        .select('id, name, points, total_spent, visit_count')
+        .eq('phone', customerPhone)
+        .eq('business_id', businessId)
+        .single()
+
+      // Add timeout to prevent hanging
+      const customerResult = await Promise.race([
+        customerQuery,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Query timeout')), 3000))
+      ]) as any
+
+      if (customerResult.error) {
+        console.error('Error fetching customer for loyalty:', customerResult.error)
+        return null
+      }
+
+      const customer = customerResult.data
+      console.log('Customer found for loyalty:', customer)
+
+      if (!customer) {
+        return null
+      }
+
+      const customerPoints = customer.points || 0
+      
+      let loyaltyMessage = `${greetingPrefix}🎁 **¡Hola ${customer.name || 'amigo'}!**
+
+💎 **Tenés ${customerPoints} puntos acumulados**
+🛍️ **Total gastado:** $${customer.total_spent?.toLocaleString() || '0'}
+👥 **Visitas:** ${customer.visit_count || 0}
+
+🎁 **Con tus puntos podés canjear:**
+• Descuentos en tu próxima visita
+• Tragos gratis  
+• Entradas sin cargo para el baile
+• ¡Y mucho más!
+
+¿Querés canjear algo o necesitás más info? ¡Escribime!`
+
+      return loyaltyMessage
+
+    } catch (error) {
+      console.error('Error fetching loyalty points:', error)
+      return null
+    }
+  }
+
+  private async updateConversationContext(customerPhone: string, businessId: string, messageText: string, customerName?: string, existingContext?: ConversationContext | null): Promise<void> {
+    try {
+      const lowerInput = messageText.toLowerCase()
+      
+      // Extract reservation details from message
+      const extractedData: Partial<ConversationContext> = {}
+
+      // Extract name if mentioned
+      const nameMatch = messageText.match(/soy\s+(\w+)|me\s+llamo\s+(\w+)|mi\s+nombre\s+es\s+(\w+)/i)
+      if (nameMatch) {
+        extractedData.customer_name = nameMatch[1] || nameMatch[2] || nameMatch[3]
+      } else if (customerName) {
+        extractedData.customer_name = customerName
+      }
+
+      // Update conversation memory in context_data
+      const currentContextData = existingContext?.context_data || {}
+      const messageHistory = currentContextData.messages || []
+      
+      // Add current message to history (keep last 10 messages)
+      messageHistory.push({
+        message: messageText,
+        timestamp: new Date().toISOString(),
+        intent: this.detectIntent(lowerInput)
+      })
+      if (messageHistory.length > 10) {
+        messageHistory.shift() // Remove oldest message
+      }
+
+      // Mark as greeted if this message contains greeting
+      const hasGreeting = lowerInput.includes('hola') || lowerInput.includes('buenas') || lowerInput.includes('buenos días') || lowerInput.includes('buenas tardes')
+      
+      extractedData.context_data = {
+        ...currentContextData,
+        messages: messageHistory,
+        greeted: currentContextData.greeted || hasGreeting,
+        lastMessageTime: new Date().toISOString()
+      }
+
+      // Extract day information
+      if (lowerInput.includes('viernes que viene') || lowerInput.includes('próximo viernes')) {
+        extractedData.reservation_day = 'viernes que viene'
+      } else if (lowerInput.includes('viernes')) {
+        extractedData.reservation_day = 'viernes'
+      } else if (lowerInput.includes('sábado que viene') || lowerInput.includes('próximo sábado')) {
+        extractedData.reservation_day = 'sábado que viene'
+      } else if (lowerInput.includes('sábado')) {
+        extractedData.reservation_day = 'sábado'
+      } else if (lowerInput.includes('domingo')) {
+        extractedData.reservation_day = 'domingo'
+      } else if (lowerInput.includes('mañana')) {
+        extractedData.reservation_day = 'mañana'
+      } else if (lowerInput.includes('hoy')) {
+        extractedData.reservation_day = 'hoy'
+      }
+
+      // Extract time information
+      const timeMatch = messageText.match(/(\d{1,2}):(\d{2})|(\d{1,2})\s*hs|a\s*las\s*(\d{1,2})/i)
+      if (timeMatch) {
+        if (timeMatch[1] && timeMatch[2]) {
+          extractedData.reservation_time = `${timeMatch[1]}:${timeMatch[2]}hs`
+        } else if (timeMatch[3]) {
+          extractedData.reservation_time = `${timeMatch[3]}:00hs`
+        } else if (timeMatch[4]) {
+          extractedData.reservation_time = `${timeMatch[4]}:00hs`
+        }
+      }
+
+      // Extract number of people (but avoid phone numbers)
+      const peopleMatch = messageText.match(/(\d+)\s*personas?|somos\s*(\d+)|para\s*(\d+)|(\d+)\s*gente/i)
+      if (peopleMatch) {
+        const people = parseInt(peopleMatch[1] || peopleMatch[2] || peopleMatch[3] || peopleMatch[4])
+        // Only consider it people count if it's reasonable and not a phone number
+        if (people && people > 0 && people <= 50 && people.toString().length <= 2) {
+          extractedData.reservation_people = people
+        }
+      }
+
+      // Extract type (cena or baile)
+      if (lowerInput.includes('cena') || lowerInput.includes('cenar')) {
+        extractedData.reservation_type = 'cena'
+      } else if (lowerInput.includes('baile') || lowerInput.includes('bailar')) {
+        extractedData.reservation_type = 'baile'
+      } else if (extractedData.reservation_time) {
+        // Auto-detect based on time
+        const hour = parseInt(extractedData.reservation_time.split(':')[0])
+        if (hour >= 20 && hour <= 23) {
+          extractedData.reservation_type = 'cena'
+        } else if (hour >= 23 || hour <= 4) {
+          extractedData.reservation_type = 'baile'
+        }
+      }
+
+      // Only update context if we have new information
+      if (Object.keys(extractedData).length === 0 && !existingContext) {
+        return
+      }
+
+      // Merge with existing context
+      const contextData = {
+        customer_phone: customerPhone,
+        business_id: businessId,
+        ...existingContext,
+        ...extractedData,
+        expires_at: new Date(Date.now() + 20 * 60 * 1000).toISOString() // 20 minutes from now
+      }
+
+      // Upsert conversation context
+      await supabase.from('conversation_context').upsert(contextData, {
+        onConflict: 'customer_phone,business_id'
+      })
+
+    } catch (error: any) {
+      console.error('Error updating conversation context:', error)
+      // Don't throw error, just log it
+    }
+  }
+
 }

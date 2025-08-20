@@ -225,10 +225,50 @@ export default function ReservationsPage() {
   }
 
   const handleDelete = async (reservation: Reservation) => {
-    if (!confirm('¿Estás seguro de que deseas eliminar esta reserva?')) {
-      return
-    }
+    // Create elegant confirmation toast with Sonner
+    toast(
+      <div className="flex flex-col gap-3">
+        <div className="flex items-start gap-3">
+          <div className="flex-shrink-0 w-10 h-10 bg-red-100 rounded-full flex items-center justify-center">
+            <Trash2 className="w-5 h-5 text-red-600" />
+          </div>
+          <div className="flex-1">
+            <h3 className="font-semibold text-gray-900">
+              ¿Eliminar reserva?
+            </h3>
+            <p className="text-sm text-gray-600 mt-1">
+              Se eliminará permanentemente la reserva de <span className="font-medium">{reservation.customer_name}</span> para el {formatDateTime(reservation.reservation_date).date}. 
+              Esta acción no se puede deshacer.
+            </p>
+          </div>
+        </div>
+        <div className="flex gap-2 ml-13">
+          <button
+            onClick={() => {
+              toast.dismiss()
+              performDeleteReservation(reservation)
+            }}
+            className="px-3 py-1.5 bg-red-600 text-white text-sm font-medium rounded-md hover:bg-red-700 transition-colors"
+          >
+            Eliminar
+          </button>
+          <button
+            onClick={() => toast.dismiss()}
+            className="px-3 py-1.5 bg-gray-200 text-gray-800 text-sm font-medium rounded-md hover:bg-gray-300 transition-colors"
+          >
+            Cancelar
+          </button>
+        </div>
+      </div>,
+      {
+        duration: Infinity, // Don't auto-dismiss
+        position: 'top-center',
+        className: 'w-96',
+      }
+    )
+  }
 
+  const performDeleteReservation = async (reservation: Reservation) => {
     try {
       const { error } = await supabase
         .from('reservations')
@@ -237,10 +277,34 @@ export default function ReservationsPage() {
       
       if (error) throw error
       
-      toast.success('Reserva eliminada correctamente')
+      toast.success(
+        <div className="flex items-center gap-2">
+          <div className="w-6 h-6 bg-green-100 rounded-full flex items-center justify-center">
+            <svg className="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+            </svg>
+          </div>
+          <span>Reserva eliminada correctamente</span>
+        </div>,
+        {
+          duration: 4000,
+        }
+      )
       loadReservations()
     } catch (error: any) {
-      toast.error('Error al eliminar reserva: ' + error.message)
+      toast.error(
+        <div className="flex items-center gap-2">
+          <div className="w-6 h-6 bg-red-100 rounded-full flex items-center justify-center">
+            <svg className="w-4 h-4 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </div>
+          <span>Error al eliminar reserva: {error.message}</span>
+        </div>,
+        {
+          duration: 5000,
+        }
+      )
     }
   }
 
@@ -332,16 +396,17 @@ export default function ReservationsPage() {
           <DialogTrigger asChild>
             <Button className="animate-scale-hover" onClick={resetForm}>
               <Plus className="mr-2 h-4 w-4" />
-              Nueva Reserva
+              <span className="hidden sm:inline">Nueva Reserva</span>
+              <span className="sm:hidden">Nueva</span>
             </Button>
           </DialogTrigger>
           
-          <DialogContent className="max-w-2xl animate-slide-up max-h-[90vh] overflow-y-auto">
+          <DialogContent className="w-[95vw] max-w-2xl mx-auto animate-slide-up max-h-[90vh] overflow-y-auto">
             <DialogHeader>
-              <DialogTitle>
+              <DialogTitle className="text-lg sm:text-xl">
                 {editingReservation ? 'Editar Reserva' : 'Nueva Reserva'}
               </DialogTitle>
-              <DialogDescription>
+              <DialogDescription className="text-sm sm:text-base">
                 {editingReservation 
                   ? 'Modifica los detalles de la reserva' 
                   : 'Completa la información para la nueva reserva'
@@ -349,166 +414,185 @@ export default function ReservationsPage() {
               </DialogDescription>
             </DialogHeader>
             
-            <form onSubmit={handleSubmit} className="space-y-4">
-              {/* Customer Info */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="customer_name">Nombre del Cliente *</Label>
-                  <Input
-                    id="customer_name"
-                    value={formData.customer_name}
-                    onChange={(e) => setFormData({...formData, customer_name: e.target.value})}
-                    placeholder="Juan Pérez"
-                    required
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="phone">Teléfono *</Label>
-                  <Input
-                    id="phone"
-                    value={formData.phone}
-                    onChange={(e) => setFormData({...formData, phone: e.target.value})}
-                    placeholder="+54 9 XXX XXX-XXXX"
-                    required
-                  />
-                </div>
-              </div>
-
-              {/* Reservation Details */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="reservation_type">Tipo de Reserva *</Label>
-                  <Select 
-                    value={formData.reservation_type} 
-                    onValueChange={(value: 'cena' | 'baile') => {
-                      setFormData({
-                        ...formData, 
-                        reservation_type: value,
-                        deposit_amount: reservationTypes[value].defaultDeposit
-                      })
-                    }}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="cena">🍽️ Cena</SelectItem>
-                      <SelectItem value="baile">💃 Baile</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="party_size">Cantidad de Personas</Label>
-                  <Input
-                    id="party_size"
-                    type="number"
-                    value={formData.party_size}
-                    onChange={(e) => setFormData({...formData, party_size: parseInt(e.target.value) || 1})}
-                    min="1"
-                    max="20"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="reservation_date">Fecha *</Label>
-                  <Input
-                    id="reservation_date"
-                    type="date"
-                    value={formData.reservation_date}
-                    onChange={(e) => setFormData({...formData, reservation_date: e.target.value})}
-                    required
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="reservation_time">Hora</Label>
-                  <Input
-                    id="reservation_time"
-                    type="time"
-                    value={formData.reservation_time}
-                    onChange={(e) => setFormData({...formData, reservation_time: e.target.value})}
-                  />
-                </div>
-              </div>
-
-              {/* Payment Info */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="deposit_amount">Monto de Seña</Label>
-                  <Input
-                    id="deposit_amount"
-                    type="number"
-                    value={formData.deposit_amount}
-                    onChange={(e) => setFormData({...formData, deposit_amount: parseFloat(e.target.value) || 0})}
-                    placeholder="0"
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="total_amount">Monto Total Estimado</Label>
-                  <Input
-                    id="total_amount"
-                    type="number"
-                    value={formData.total_amount}
-                    onChange={(e) => setFormData({...formData, total_amount: parseFloat(e.target.value) || 0})}
-                    placeholder="0"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="flex items-center space-x-2">
-                  <input
-                    id="deposit_paid"
-                    type="checkbox"
-                    checked={formData.deposit_paid}
-                    onChange={(e) => setFormData({...formData, deposit_paid: e.target.checked})}
-                    className="rounded border-gray-300"
-                  />
-                  <Label htmlFor="deposit_paid">Seña Pagada</Label>
-                </div>
-
-                {formData.deposit_paid && (
+            <form onSubmit={handleSubmit} className="space-y-6">
+              {/* Información del Cliente */}
+              <div className="space-y-4">
+                <h3 className="text-sm font-semibold text-gray-900 border-b pb-2">Información del Cliente</h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label htmlFor="deposit_method">Método de Pago</Label>
+                    <Label htmlFor="customer_name" className="text-sm font-medium">Nombre del Cliente *</Label>
+                    <Input
+                      id="customer_name"
+                      value={formData.customer_name}
+                      onChange={(e) => setFormData({...formData, customer_name: e.target.value})}
+                      placeholder="Juan Pérez"
+                      className="w-full"
+                      required
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="phone" className="text-sm font-medium">Teléfono *</Label>
+                    <Input
+                      id="phone"
+                      value={formData.phone}
+                      onChange={(e) => setFormData({...formData, phone: e.target.value})}
+                      placeholder="+54 9 XXX XXX-XXXX"
+                      className="w-full"
+                      required
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Detalles de la Reserva */}
+              <div className="space-y-4">
+                <h3 className="text-sm font-semibold text-gray-900 border-b pb-2">Detalles de la Reserva</h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="reservation_type" className="text-sm font-medium">Tipo de Reserva *</Label>
                     <Select 
-                      value={formData.deposit_method} 
-                      onValueChange={(value) => setFormData({...formData, deposit_method: value})}
+                      value={formData.reservation_type} 
+                      onValueChange={(value: 'cena' | 'baile') => {
+                        setFormData({
+                          ...formData, 
+                          reservation_type: value,
+                          deposit_amount: reservationTypes[value].defaultDeposit
+                        })
+                      }}
                     >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Seleccionar método" />
+                      <SelectTrigger className="w-full">
+                        <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="efectivo">Efectivo</SelectItem>
-                        <SelectItem value="transferencia">Transferencia</SelectItem>
-                        <SelectItem value="mercadopago">MercadoPago</SelectItem>
-                        <SelectItem value="tarjeta">Tarjeta</SelectItem>
+                        <SelectItem value="cena">🍽️ Cena</SelectItem>
+                        <SelectItem value="baile">💃 Baile</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
-                )}
+
+                  <div className="space-y-2">
+                    <Label htmlFor="party_size" className="text-sm font-medium">Cantidad de Personas</Label>
+                    <Input
+                      id="party_size"
+                      type="number"
+                      value={formData.party_size}
+                      onChange={(e) => setFormData({...formData, party_size: parseInt(e.target.value) || 1})}
+                      min="1"
+                      max="20"
+                      className="w-full"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="reservation_date" className="text-sm font-medium">Fecha *</Label>
+                    <Input
+                      id="reservation_date"
+                      type="date"
+                      value={formData.reservation_date}
+                      onChange={(e) => setFormData({...formData, reservation_date: e.target.value})}
+                      className="w-full"
+                      required
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="reservation_time" className="text-sm font-medium">Hora</Label>
+                    <Input
+                      id="reservation_time"
+                      type="time"
+                      value={formData.reservation_time}
+                      onChange={(e) => setFormData({...formData, reservation_time: e.target.value})}
+                      className="w-full"
+                    />
+                  </div>
+                </div>
               </div>
 
+              {/* Información de Pago */}
+              <div className="space-y-4">
+                <h3 className="text-sm font-semibold text-gray-900 border-b pb-2">Información de Pago</h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="deposit_amount" className="text-sm font-medium">Monto de Seña</Label>
+                    <Input
+                      id="deposit_amount"
+                      type="number"
+                      value={formData.deposit_amount}
+                      onChange={(e) => setFormData({...formData, deposit_amount: parseFloat(e.target.value) || 0})}
+                      placeholder="0"
+                      className="w-full"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="total_amount" className="text-sm font-medium">Monto Total Estimado</Label>
+                    <Input
+                      id="total_amount"
+                      type="number"
+                      value={formData.total_amount}
+                      onChange={(e) => setFormData({...formData, total_amount: parseFloat(e.target.value) || 0})}
+                      placeholder="0"
+                      className="w-full"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <div className="flex items-center space-x-2">
+                    <input
+                      id="deposit_paid"
+                      type="checkbox"
+                      checked={formData.deposit_paid}
+                      onChange={(e) => setFormData({...formData, deposit_paid: e.target.checked})}
+                      className="rounded border-gray-300"
+                    />
+                    <Label htmlFor="deposit_paid" className="text-sm font-medium">Seña Pagada</Label>
+                  </div>
+
+                  {formData.deposit_paid && (
+                    <div className="space-y-2">
+                      <Label htmlFor="deposit_method" className="text-sm font-medium">Método de Pago</Label>
+                      <Select 
+                        value={formData.deposit_method} 
+                        onValueChange={(value) => setFormData({...formData, deposit_method: value})}
+                      >
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Seleccionar método" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="efectivo">Efectivo</SelectItem>
+                          <SelectItem value="transferencia">Transferencia</SelectItem>
+                          <SelectItem value="mercadopago">MercadoPago</SelectItem>
+                          <SelectItem value="tarjeta">Tarjeta</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Solicitudes Especiales */}
               <div className="space-y-2">
-                <Label htmlFor="special_requests">Solicitudes Especiales</Label>
+                <Label htmlFor="special_requests" className="text-sm font-medium">Solicitudes Especiales</Label>
                 <Textarea
                   id="special_requests"
                   value={formData.special_requests}
                   onChange={(e) => setFormData({...formData, special_requests: e.target.value})}
                   placeholder="Mesa cerca de la ventana, cumpleaños, etc..."
                   rows={3}
+                  className="w-full resize-none"
                 />
               </div>
 
-              <div className="flex justify-end gap-2 pt-4">
-                <Button type="button" variant="outline" onClick={resetForm}>
+              {/* Botones */}
+              <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 pt-4 border-t">
+                <Button type="button" variant="outline" onClick={resetForm} className="w-full sm:w-auto">
                   Cancelar
                 </Button>
-                <Button type="submit" disabled={loading}>
+                <Button type="submit" disabled={loading} className="w-full sm:w-auto">
                   {loading ? 'Guardando...' : editingReservation ? 'Actualizar' : 'Crear Reserva'}
                 </Button>
               </div>

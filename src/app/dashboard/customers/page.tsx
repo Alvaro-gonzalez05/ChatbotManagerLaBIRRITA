@@ -230,10 +230,50 @@ export default function CustomersPage() {
   }
 
   const handleDelete = async (customer: Customer) => {
-    if (!confirm('¿Estás seguro de que deseas eliminar este cliente?')) {
-      return
-    }
+    // Create elegant confirmation toast with Sonner
+    toast(
+      <div className="flex flex-col gap-3">
+        <div className="flex items-start gap-3">
+          <div className="flex-shrink-0 w-10 h-10 bg-red-100 rounded-full flex items-center justify-center">
+            <Trash2 className="w-5 h-5 text-red-600" />
+          </div>
+          <div className="flex-1">
+            <h3 className="font-semibold text-gray-900">
+              ¿Eliminar cliente?
+            </h3>
+            <p className="text-sm text-gray-600 mt-1">
+              Se eliminará permanentemente a <span className="font-medium">{customer.name || customer.phone}</span>. 
+              Esta acción no se puede deshacer.
+            </p>
+          </div>
+        </div>
+        <div className="flex gap-2 ml-13">
+          <button
+            onClick={() => {
+              toast.dismiss()
+              performDeleteCustomer(customer)
+            }}
+            className="px-3 py-1.5 bg-red-600 text-white text-sm font-medium rounded-md hover:bg-red-700 transition-colors"
+          >
+            Eliminar
+          </button>
+          <button
+            onClick={() => toast.dismiss()}
+            className="px-3 py-1.5 bg-gray-200 text-gray-800 text-sm font-medium rounded-md hover:bg-gray-300 transition-colors"
+          >
+            Cancelar
+          </button>
+        </div>
+      </div>,
+      {
+        duration: Infinity, // Don't auto-dismiss
+        position: 'top-center',
+        className: 'w-96',
+      }
+    )
+  }
 
+  const performDeleteCustomer = async (customer: Customer) => {
     try {
       const { error } = await supabase
         .from('customers')
@@ -242,10 +282,34 @@ export default function CustomersPage() {
       
       if (error) throw error
       
-      toast.success('Cliente eliminado correctamente')
+      toast.success(
+        <div className="flex items-center gap-2">
+          <div className="w-6 h-6 bg-green-100 rounded-full flex items-center justify-center">
+            <svg className="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+            </svg>
+          </div>
+          <span>Cliente eliminado correctamente</span>
+        </div>,
+        {
+          duration: 4000,
+        }
+      )
       loadCustomers()
     } catch (error: any) {
-      toast.error('Error al eliminar cliente: ' + error.message)
+      toast.error(
+        <div className="flex items-center gap-2">
+          <div className="w-6 h-6 bg-red-100 rounded-full flex items-center justify-center">
+            <svg className="w-4 h-4 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </div>
+          <span>Error al eliminar cliente: {error.message}</span>
+        </div>,
+        {
+          duration: 5000,
+        }
+      )
     }
   }
 
@@ -306,16 +370,17 @@ export default function CustomersPage() {
           <DialogTrigger asChild>
             <Button className="animate-scale-hover" onClick={resetForm}>
               <Plus className="mr-2 h-4 w-4" />
-              Agregar Cliente
+              <span className="hidden sm:inline">Agregar Cliente</span>
+              <span className="sm:hidden">Agregar</span>
             </Button>
           </DialogTrigger>
           
-          <DialogContent className="max-w-lg animate-slide-up">
+          <DialogContent className="w-[95vw] max-w-lg mx-auto animate-slide-up max-h-[90vh] overflow-y-auto">
             <DialogHeader>
-              <DialogTitle>
+              <DialogTitle className="text-lg sm:text-xl">
                 {editingCustomer ? 'Editar Cliente' : 'Agregar Nuevo Cliente'}
               </DialogTitle>
-              <DialogDescription>
+              <DialogDescription className="text-sm sm:text-base">
                 {editingCustomer 
                   ? 'Modifica la información del cliente' 
                   : 'Completa la información del nuevo cliente'
@@ -324,92 +389,104 @@ export default function CustomersPage() {
             </DialogHeader>
             
             <form onSubmit={handleSubmit} className="space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Nombre y Teléfono */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label htmlFor="name">Nombre Completo *</Label>
+                  <Label htmlFor="name" className="text-sm font-medium">Nombre Completo *</Label>
                   <Input
                     id="name"
                     value={formData.name}
                     onChange={(e) => setFormData({...formData, name: e.target.value})}
                     placeholder="Juan Pérez"
+                    className="w-full"
                     required
                   />
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="phone">Teléfono *</Label>
+                  <Label htmlFor="phone" className="text-sm font-medium">Teléfono *</Label>
                   <Input
                     id="phone"
                     value={formData.phone}
                     onChange={(e) => setFormData({...formData, phone: e.target.value})}
                     placeholder="+54 9 XXX XXX-XXXX"
+                    className="w-full"
                     required
                   />
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Email e Instagram */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label htmlFor="email">Email</Label>
+                  <Label htmlFor="email" className="text-sm font-medium">Email</Label>
                   <Input
                     id="email"
                     type="email"
                     value={formData.email}
                     onChange={(e) => setFormData({...formData, email: e.target.value})}
                     placeholder="juan@email.com"
+                    className="w-full"
                   />
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="instagram">Instagram</Label>
+                  <Label htmlFor="instagram" className="text-sm font-medium">Instagram</Label>
                   <Input
                     id="instagram"
                     value={formData.instagram_username}
                     onChange={(e) => setFormData({...formData, instagram_username: e.target.value})}
                     placeholder="@juanperez"
+                    className="w-full"
                   />
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Cumpleaños y Puntos */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label htmlFor="birthday">Fecha de Nacimiento</Label>
+                  <Label htmlFor="birthday" className="text-sm font-medium">Fecha de Nacimiento</Label>
                   <Input
                     id="birthday"
                     type="date"
                     value={formData.birthday}
                     onChange={(e) => setFormData({...formData, birthday: e.target.value})}
+                    className="w-full"
                   />
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="points">Puntos</Label>
+                  <Label htmlFor="points" className="text-sm font-medium">Puntos</Label>
                   <Input
                     id="points"
                     type="number"
                     value={formData.points}
                     onChange={(e) => setFormData({...formData, points: parseInt(e.target.value) || 0})}
                     placeholder="0"
+                    className="w-full"
                   />
                 </div>
               </div>
 
+              {/* Notas */}
               <div className="space-y-2">
-                <Label htmlFor="notes">Notas</Label>
+                <Label htmlFor="notes" className="text-sm font-medium">Notas</Label>
                 <Textarea
                   id="notes"
                   value={formData.notes}
                   onChange={(e) => setFormData({...formData, notes: e.target.value})}
                   placeholder="Información adicional sobre el cliente..."
                   rows={3}
+                  className="w-full resize-none"
                 />
               </div>
 
-              <div className="flex justify-end gap-2 pt-4">
-                <Button type="button" variant="outline" onClick={resetForm}>
+              {/* Botones */}
+              <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 pt-4">
+                <Button type="button" variant="outline" onClick={resetForm} className="w-full sm:w-auto">
                   Cancelar
                 </Button>
-                <Button type="submit" disabled={loading}>
+                <Button type="submit" disabled={loading} className="w-full sm:w-auto">
                   {loading ? 'Guardando...' : editingCustomer ? 'Actualizar' : 'Crear Cliente'}
                 </Button>
               </div>

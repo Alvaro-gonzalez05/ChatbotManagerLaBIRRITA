@@ -763,7 +763,7 @@ export default function BotConfigurationPage() {
                     Conexión WhatsApp
                   </CardTitle>
                   <CardDescription>
-                    Conecta tu bot con WhatsApp usando Evolution API
+                    Conecta tu bot con la API oficial de WhatsApp Business
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-6">
@@ -851,13 +851,14 @@ export default function BotConfigurationPage() {
                     </div>
 
                     <div className="p-3 bg-muted rounded-lg">
-                      <h4 className="font-medium text-sm mb-2">Configuración de Evolution API</h4>
+                      <h4 className="font-medium text-sm mb-2">Configuración de WhatsApp Business API</h4>
                       <p className="text-xs text-muted-foreground mb-2">
                         La configuración se realiza a través de variables de entorno del servidor.
                       </p>
                       <ul className="text-xs text-muted-foreground space-y-1">
-                        <li>• EVOLUTION_API_URL: URL de tu instancia de Evolution API</li>
-                        <li>• EVOLUTION_API_KEY: Clave de acceso a la API</li>
+                        <li>• WHATSAPP_ACCESS_TOKEN: Token de acceso de Meta Business</li>
+                        <li>• WHATSAPP_VERIFY_TOKEN: Token de verificación del webhook</li>
+                        <li>• WHATSAPP_API_VERSION: Versión de la API (opcional)</li>
                       </ul>
                     </div>
                   </div>

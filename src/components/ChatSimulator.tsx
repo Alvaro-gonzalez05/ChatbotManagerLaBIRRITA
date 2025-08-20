@@ -44,7 +44,7 @@ export default function ChatSimulator({ botPersonality, businessInfo }: ChatSimu
   const [isPhoneSet, setIsPhoneSet] = useState(false)
   const scrollAreaRef = useRef<HTMLDivElement>(null)
 
-  // Initialize with phone number prompt or welcome message
+  // Initialize with phone number prompt
   useEffect(() => {
     if (!isPhoneSet && messages.length === 0) {
       setMessages([{
@@ -53,18 +53,9 @@ export default function ChatSimulator({ botPersonality, businessInfo }: ChatSimu
         sender: 'bot',
         timestamp: new Date()
       }])
-    } else if (isPhoneSet && botPersonality.welcome_message) {
-      // Clear messages and add welcome message when phone is set
-      if (messages.length === 1 && messages[0].text.includes('número de teléfono')) {
-        setMessages([{
-          id: '2',
-          text: botPersonality.welcome_message,
-          sender: 'bot',
-          timestamp: new Date()
-        }])
-      }
     }
-  }, [botPersonality.welcome_message, messages.length, isPhoneSet])
+    // Note: Removed automatic welcome message to allow custom customer recognition flow
+  }, [messages.length, isPhoneSet])
 
   // Auto scroll to bottom when new messages arrive
   useEffect(() => {
@@ -97,14 +88,67 @@ export default function ChatSimulator({ botPersonality, businessInfo }: ChatSimu
           timestamp: new Date()
         }
 
-        const confirmMessage: Message = {
-          id: (Date.now() + 1).toString(),
-          text: `Perfecto! Tu número ${extractedPhone} ha sido registrado. Ahora puedes comenzar a chatear.`,
-          sender: 'bot',
-          timestamp: new Date()
+        // Check if customer already exists
+        setIsLoading(true)
+        try {
+          const response = await fetch(`/api/customers/search`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              phoneNumber: extractedPhone,
+              businessId: business?.id || 'f2a24619-5016-490c-9dc9-dd08fd6549b3'
+            }),
+          })
+
+          if (response.ok) {
+            const data = await response.json()
+            let confirmMessage: Message
+            
+            if (data.exists && data.customer?.name) {
+              // Existing customer
+              confirmMessage = {
+                id: (Date.now() + 1).toString(),
+                text: `¡Hola ${data.customer.name}! Te reconocí por tu número ${extractedPhone}. ¿En qué te puedo ayudar hoy?`,
+                sender: 'bot',
+                timestamp: new Date()
+              }
+            } else {
+              // New customer - ask for name
+              confirmMessage = {
+                id: (Date.now() + 1).toString(),
+                text: `Perfecto! Tu número ${extractedPhone} ha sido registrado. Para brindarte un mejor servicio, ¿podrías decirme tu nombre?`,
+                sender: 'bot',
+                timestamp: new Date()
+              }
+            }
+            
+            setMessages(prev => [...prev, userMessage, confirmMessage])
+          } else {
+            // Fallback if API fails
+            const confirmMessage: Message = {
+              id: (Date.now() + 1).toString(),
+              text: `Perfecto! Tu número ${extractedPhone} ha sido registrado. Ahora puedes comenzar a chatear.`,
+              sender: 'bot',
+              timestamp: new Date()
+            }
+            setMessages(prev => [...prev, userMessage, confirmMessage])
+          }
+        } catch (error) {
+          console.error('Error checking customer:', error)
+          // Fallback if API fails
+          const confirmMessage: Message = {
+            id: (Date.now() + 1).toString(),
+            text: `Perfecto! Tu número ${extractedPhone} ha sido registrado. Ahora puedes comenzar a chatear.`,
+            sender: 'bot',
+            timestamp: new Date()
+          }
+          setMessages(prev => [...prev, userMessage, confirmMessage])
+        } finally {
+          setIsLoading(false)
         }
 
-        setMessages(prev => [...prev, userMessage, confirmMessage])
         setInputMessage('')
         return
       } else {
@@ -151,21 +195,28 @@ export default function ChatSimulator({ botPersonality, businessInfo }: ChatSimu
     setMessages(prev => [...prev, typingMessage])
 
     try {
+      const requestData = {
+        phoneNumber: phoneNumber || '542616000001',
+        message: inputMessage,
+        businessId: business?.id || 'f2a24619-5016-490c-9dc9-dd08fd6549b3'
+      }
+      
+      console.log('Sending request to bot:', requestData)
+      
       // Call the AI service
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/api/whatsapp/test/ai`, {
+      const response = await fetch(`/api/whatsapp/test/ai`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          phoneNumber: phoneNumber || '542616000001', // Use actual phone number
-          message: inputMessage,
-          businessId: business?.id || 'f2a24619-5016-490c-9dc9-dd08fd6549b3'
-        }),
+        body: JSON.stringify(requestData),
       })
+      
+      console.log('Response status:', response.status, response.statusText)
 
       if (response.ok) {
         const data = await response.json()
+        console.log('Bot response data:', data)
         
         // Remove typing indicator and add bot response
         setMessages(prev => prev.filter(msg => msg.id !== 'typing'))
@@ -179,7 +230,9 @@ export default function ChatSimulator({ botPersonality, businessInfo }: ChatSimu
         
         setMessages(prev => [...prev, botResponse])
       } else {
-        throw new Error('Failed to get bot response')
+        const errorText = await response.text()
+        console.error('API Error:', response.status, response.statusText, errorText)
+        throw new Error(`API returned ${response.status}: ${errorText}`)
       }
     } catch (error) {
       console.error('Error sending message:', error)
