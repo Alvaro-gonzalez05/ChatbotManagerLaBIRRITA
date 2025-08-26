@@ -337,11 +337,58 @@ export default function DashboardPage() {
       // Reload customers to sync with DB
       loadCustomers()
       
+      // Disparar notificación inmediata de puntos
+      await sendImmediatePointsNotification(updatedFoundCustomer, pointsToAward)
+      
     } catch (error: any) {
       console.error('Error loading points:', error)
       toast.error('Error al cargar puntos: ' + error.message)
     } finally {
       setLoading(false)
+    }
+  }
+
+  // Función para enviar notificación inmediata de puntos
+  const sendImmediatePointsNotification = async (customer: any, pointsAdded: number) => {
+    try {
+      // Buscar automatización de puntos activa
+      const { data: automation } = await supabase
+        .from('automations')
+        .select('*')
+        .eq('business_id', business?.id)
+        .eq('automation_type', 'points_notification')
+        .eq('is_active', true)
+        .single()
+
+      if (!automation) {
+        console.log('No hay automatización de puntos activa')
+        return
+      }
+
+      // Llamar al endpoint de WhatsApp para enviar el mensaje
+      const response = await fetch('/api/whatsapp/send-points-notification', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          customerPhone: customer.phone,
+          customerName: customer.name,
+          pointsAdded: pointsAdded,
+          totalPoints: customer.points,
+          businessId: business?.id,
+          automationId: automation.id,
+          templateName: automation.meta_template_name
+        })
+      })
+
+      if (response.ok) {
+        console.log('✅ Notificación de puntos enviada')
+      } else {
+        console.error('❌ Error enviando notificación de puntos')
+      }
+    } catch (error) {
+      console.error('Error en notificación de puntos:', error)
     }
   }
 

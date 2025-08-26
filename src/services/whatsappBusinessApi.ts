@@ -1,11 +1,25 @@
 import axios, { AxiosInstance } from 'axios'
+import { getTemplateConfig, buildTemplateComponents, validateTemplateParameters } from '@/lib/whatsapp-templates'
 
 export interface WhatsAppBusinessMessage {
   messaging_product: 'whatsapp'
   to: string
-  type: 'text'
-  text: {
+  type: 'text' | 'template'
+  text?: {
     body: string
+  }
+  template?: {
+    name: string
+    language: {
+      code: string
+    }
+    components: Array<{
+      type: 'header' | 'body' | 'footer' | 'button'
+      parameters: Array<{
+        type: 'text'
+        text: string
+      }>
+    }>
   }
 }
 
@@ -88,6 +102,72 @@ export class WhatsAppBusinessApiService {
     } catch (error: any) {
       console.error('Error sending WhatsApp template:', error.response?.data || error.message)
       throw new Error('Failed to send WhatsApp template')
+    }
+  }
+
+  async sendTemplateWithParameters(to: string, templateName: string, parameters: string[] = [], languageCode: string = 'es'): Promise<any> {
+    try {
+      // Clean the phone number (remove special characters, spaces, etc.)
+      const cleanNumber = to.replace(/\D/g, '')
+      // For Argentina, ensure it starts with 54
+      const formattedNumber = cleanNumber.startsWith('54') ? cleanNumber : `54${cleanNumber}`
+
+      // Get template configuration
+      const templateConfig = getTemplateConfig(templateName)
+      if (!templateConfig) {
+        throw new Error(`Plantilla ${templateName} no encontrada en configuración`)
+      }
+
+      // Validate parameters
+      if (!validateTemplateParameters(templateName, parameters)) {
+        const expectedParams = templateConfig.headerParameters + templateConfig.bodyParameters
+        throw new Error(`Plantilla ${templateName} requiere ${expectedParams} parámetros, recibidos ${parameters.length}`)
+      }
+
+      // Build components using configuration
+      const components = buildTemplateComponents(templateName, parameters)
+
+      const templateData = {
+        messaging_product: 'whatsapp',
+        to: formattedNumber,
+        type: 'template',
+        template: {
+          name: templateName,
+          language: {
+            code: templateConfig.language
+          },
+          components: components.length > 0 ? components : undefined
+        }
+      }
+
+      console.log(`🤖 Enviando plantilla ${templateName} a ${formattedNumber}`)
+      console.log(`📋 Parámetros (${parameters.length}):`, parameters)
+      console.log(`🔧 Configuración:`, templateConfig)
+      console.log(`📨 Template data:`, JSON.stringify(templateData, null, 2))
+
+      const response = await this.client.post(`/${this.phoneNumberId}/messages`, templateData)
+      console.log('✅ Respuesta de WhatsApp:', response.data)
+      return response.data
+    } catch (error: any) {
+      console.error('❌ Error sending WhatsApp template with parameters:', error.response?.data || error.message)
+      console.error('📋 Template info:', {
+        name: templateName,
+        parameters,
+        to: to,
+        parameterCount: parameters.length
+      })
+      
+      // Return more detailed error info
+      const cleanNum = to.replace(/\D/g, '')
+      const finalNumber = cleanNum.startsWith('54') ? cleanNum : `54${cleanNum}`
+      
+      return {
+        error: true,
+        message: error.response?.data?.error?.message || error.message,
+        details: error.response?.data || error.message,
+        templateName,
+        to: finalNumber
+      }
     }
   }
 

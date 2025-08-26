@@ -218,16 +218,20 @@ export class BotService {
     const hasMenuRequest = lowerInput.includes('menu') || lowerInput.includes('comida') || lowerInput.includes('carta') || lowerInput.includes('platos')
     const hasLoyaltyRequest = (lowerInput.includes('puntos') || lowerInput.includes('fidelidad') || lowerInput.includes('loyalty')) && 
                              !lowerInput.includes('precio') && !lowerInput.includes('costo') && !lowerInput.includes('cuanto sale') && !lowerInput.includes('cuanto cuesta')
-    console.log(`🔍 DEBUG: lowerInput="${lowerInput}", hasLoyaltyRequest=${hasLoyaltyRequest}`)
     const hasPriceRequest = (lowerInput.includes('precio') || lowerInput.includes('costo') || 
                            (lowerInput.includes('cuanto') && !lowerInput.includes('puntos'))) &&
                            !hasLoyaltyRequest
     
-    // Reservation detection: only if explicitly mentions reservation keywords AND NOT asking about other things
+    // Enhanced reservation detection with multiple patterns
     const hasReservationKeywords = lowerInput.includes('reserva') || lowerInput.includes('mesa') || lowerInput.includes('booking')
-    const hasReservationIntent = (lowerInput.includes('quisiera') || lowerInput.includes('quiero')) && 
-                               (hasReservationKeywords || lowerInput.includes('reservar'))
-    const hasReservation = hasReservationKeywords || hasReservationIntent
+    const hasReservationVerbs = lowerInput.includes('reservar') || lowerInput.includes('reservemos') || lowerInput.includes('reservo')
+    const hasReservationIntent = (lowerInput.includes('quisiera') || lowerInput.includes('quiero') || lowerInput.includes('queremos') || lowerInput.includes('me gustaria')) && 
+                               (hasReservationKeywords || hasReservationVerbs)
+    const hasPositiveReservationResponse = (lowerInput.includes('dale') || lowerInput.includes('genial') || lowerInput.includes('perfecto') || lowerInput.includes('barbaro') || lowerInput.includes('bárbaro') || lowerInput.includes('si') || lowerInput.includes('sí')) &&
+                                         (hasReservationKeywords || hasReservationVerbs || lowerInput.includes('reservemos') || lowerInput.includes('reserva'))
+    const hasReservation = hasReservationKeywords || hasReservationVerbs || hasReservationIntent || hasPositiveReservationResponse
+    
+    console.log(`🔍 DEBUG: lowerInput="${lowerInput}", hasLoyaltyRequest=${hasLoyaltyRequest}, hasReservation=${hasReservation}`)
     const hasReservationDetails = this.isReservationDetails(lowerInput)
 
     // Check if already greeted in this conversation (avoid repeated greetings)
@@ -277,12 +281,9 @@ También podés seguir escribiendo acá que te contesto al toque. ¿En qué más
     if (hasLoyaltyRequest) {
       console.log('🎯 Loyalty request detected for customer:', customerNumber)
       if (personality.capabilities.includes('puntos')) {
-        const greetingPrefix = hasGreeting && !alreadyGreeted && extractedName ? `¡Hola ${extractedName}! ` : 
-                             hasGreeting && !alreadyGreeted ? '¡Hola! ' : ''
-        
         console.log('🔍 Calling getLoyaltyPointsResponse...')
         // Try to get actual points if we have customer info
-        const loyaltyResponse = await this.getLoyaltyPointsResponse(customerNumber, business.id, greetingPrefix)
+        const loyaltyResponse = await this.getLoyaltyPointsResponse(customerNumber, business.id)
         console.log('📊 Loyalty response received:', loyaltyResponse ? 'SUCCESS' : 'NULL')
         if (loyaltyResponse) {
           return loyaltyResponse
@@ -297,8 +298,8 @@ Con cada consumo sumás puntos que podés canjear por:
 • Tragos gratis  
 • Entradas sin cargo para el baile
 
-Decime tu número o nombre y te consulto cuántos puntos tenés.`
-        return greetingPrefix + response
+¡Hacé tu reserva para venir al local y consultar tus puntos!`
+        return response
       }
     }
 
@@ -1005,10 +1006,15 @@ RESPUESTA (máximo 300 caracteres):`
       return `${greeting}🍽️ Nuestra carta tiene:\n🥩 Asados y parrilla\n🍕 Pizzas artesanales\n🍸 Tragos de autor\n🧀 Picadas para compartir`
     }
     
-    // Check if message combines greeting + reservation request
+    // Check if message combines greeting + reservation request with enhanced detection
     const hasGreeting = message.includes('hola') || message.includes('buenas')
-    const hasReservationRequest = message.includes('reserva') || message.includes('mesa') || message.includes('booking') ||
-        (message.includes('quiero') && message.includes('reservar')) || message.includes('quisiera')
+    const hasReservationKeywords = message.includes('reserva') || message.includes('mesa') || message.includes('booking')
+    const hasReservationVerbs = message.includes('reservar') || message.includes('reservemos') || message.includes('reservo')
+    const hasReservationIntent = (message.includes('quisiera') || message.includes('quiero') || message.includes('queremos') || message.includes('me gustaria')) && 
+                               (hasReservationKeywords || hasReservationVerbs)
+    const hasPositiveReservationResponse = (message.includes('dale') || message.includes('genial') || message.includes('perfecto') || message.includes('barbaro') || message.includes('bárbaro') || message.includes('si') || message.includes('sí')) &&
+                                         (hasReservationKeywords || hasReservationVerbs || message.includes('reservemos') || message.includes('reserva'))
+    const hasReservationRequest = hasReservationKeywords || hasReservationVerbs || hasReservationIntent || hasPositiveReservationResponse
     
     if (hasGreeting && hasReservationRequest) {
       // Greeting + reservation in same message - let structured flow handle but with greeting
@@ -1251,14 +1257,14 @@ Por favor contactanos para más información.`
     return null
   }
 
-  private async getLoyaltyPointsResponse(customerPhone: string, businessId: string, greetingPrefix: string = ''): Promise<string | null> {
+  private async getLoyaltyPointsResponse(customerPhone: string, businessId: string): Promise<string | null> {
     try {
       console.log(`Getting loyalty points for phone: ${customerPhone}, business: ${businessId}`)
       
       // Get customer points directly from database with timeout
       const customerQuery = supabase
         .from('customers')
-        .select('id, name, points, total_spent, visit_count')
+        .select('id, name, points')
         .eq('phone', customerPhone)
         .eq('business_id', businessId)
         .single()
@@ -1283,19 +1289,33 @@ Por favor contactanos para más información.`
 
       const customerPoints = customer.points || 0
       
-      let loyaltyMessage = `${greetingPrefix}🎁 **¡Hola ${customer.name || 'amigo'}!**
+      // Get redeemable items from database
+      const redeemableItemsQuery = supabase
+        .from('redeemable_items')
+        .select('name, points_required, description')
+        .eq('business_id', businessId)
+        .eq('is_available', true)
+        .order('points_required', { ascending: true })
+        .limit(10)
 
-💎 **Tenés ${customerPoints} puntos acumulados**
-🛍️ **Total gastado:** $${customer.total_spent?.toLocaleString() || '0'}
-👥 **Visitas:** ${customer.visit_count || 0}
+      const redeemableItemsResult = await Promise.race([
+        redeemableItemsQuery,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Query timeout')), 3000))
+      ]) as any
+
+      let redeemableItemsText = '• Descuentos en tu próxima visita\n• Tragos gratis\n• Entradas sin cargo para el baile'
+      
+      if (!redeemableItemsResult.error && redeemableItemsResult.data && redeemableItemsResult.data.length > 0) {
+        const items = redeemableItemsResult.data
+        redeemableItemsText = items.map((item: any) => `• ${item.name} (${item.points_required} puntos)`).join('\n')
+      }
+      
+      let loyaltyMessage = `💎 **Tenés ${customerPoints} puntos acumulados**
 
 🎁 **Con tus puntos podés canjear:**
-• Descuentos en tu próxima visita
-• Tragos gratis  
-• Entradas sin cargo para el baile
-• ¡Y mucho más!
+${redeemableItemsText}
 
-¿Querés canjear algo o necesitás más info? ¡Escribime!`
+¡Hacé tu reserva para venir al local y canjear tus puntos!`
 
       return loyaltyMessage
 

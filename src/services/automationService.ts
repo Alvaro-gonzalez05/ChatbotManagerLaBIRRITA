@@ -6,7 +6,12 @@ interface Customer {
   name: string
   phone: string
   birthday?: string
+  email?: string
   business_id: string
+  visit_count?: number
+  last_interaction?: string
+  points?: number
+  created_at?: string
 }
 
 interface Automation {
@@ -20,6 +25,8 @@ interface Automation {
   promotion_id?: string
   points_reward?: number
   missing_field_type?: string
+  target_audience?: string
+  frequency_type?: string
 }
 
 interface Promotion {
@@ -41,6 +48,18 @@ export class AutomationService {
       process.env.SUPABASE_SERVICE_ROLE_KEY!
     )
     this.whatsapp = new WhatsAppBusinessApiService()
+  }
+
+  // Main method to process all types of automations
+  async processAllAutomations(): Promise<void> {
+    console.log('🤖 Procesando todas las automatizaciones...')
+    
+    await Promise.all([
+      this.processBirthdayAutomations(),
+      this.processInactiveCustomersAutomations(),
+      this.processPointsNotificationAutomations(),
+      this.processMissingFieldsAutomations()
+    ])
   }
 
   async processBirthdayAutomations(): Promise<void> {
@@ -145,55 +164,68 @@ export class AutomationService {
       // Get promotion if assigned
       let promotion: Promotion | null = null
       if (automation.promotion_id) {
+        console.log(`🎁 Obteniendo promoción ID: ${automation.promotion_id}`)
         const { data: promoData, error: promoError } = await this.supabase
           .from('promotions')
           .select('*')
           .eq('id', automation.promotion_id)
+          .eq('is_active', true)
           .single()
 
         if (!promoError && promoData) {
           promotion = promoData
+          console.log(`✅ Promoción encontrada: ${promoData.title}`)
+        } else {
+          console.log(`❌ No se encontró promoción activa con ID: ${automation.promotion_id}`)
         }
       }
 
-      // Build message text
-      let message = automation.message_template
-        .replace(/{name}/g, customer.name)
-        .replace(/{customer_name}/g, customer.name)
+      // Build promotion text
+      let promotionText = '🎂 Celebración especial de cumpleaños'
+      let pointsReward = '100'
 
-      // Add promotion info if available
       if (promotion) {
-        message += `\n\n🎁 ${promotion.title}\n${promotion.description}`
-        
+        promotionText = promotion.title
+        if (promotion.description) {
+          promotionText += ` - ${promotion.description}`
+        }
         if (promotion.discount_percentage) {
-          message += `\n💰 ¡${promotion.discount_percentage}% de descuento especial!`
+          promotionText += ` (${promotion.discount_percentage}% descuento)`
         }
-        
-        if (promotion.points_reward) {
-          message += `\n⭐ Gana ${promotion.points_reward} puntos extras`
-        }
+        pointsReward = promotion.points_reward?.toString() || automation.points_reward?.toString() || '100'
+      } else if (automation.points_reward) {
+        pointsReward = automation.points_reward.toString()
       }
 
-      // Send WhatsApp message
-      const result = await this.whatsapp.sendMessage(customer.phone, message)
+      // Send WhatsApp template message
+      const templateName = 'birthday_reminder'
+      const parameters = [
+        customer.name, // {{1}} Header: nombre del cliente
+        promotionText, // {{1}} Body: promocion especial
+        pointsReward // {{2}} Body: puntos de regalo
+      ]
+
+      console.log(`🎂 Enviando plantilla ${templateName} a ${customer.name} (${customer.phone})`)
+      console.log(`📋 Parámetros:`, parameters)
+      console.log(`🎁 Promoción aplicada:`, promotion ? promotion.title : 'Promoción por defecto')
+
+      const result = await this.whatsapp.sendTemplateWithParameters(customer.phone, templateName, parameters)
       
-      if (result) {
-        console.log(`✅ Mensaje enviado exitosamente a ${customer.name}`)
+      if (result && !result.error) {
+        console.log(`✅ Plantilla ${templateName} enviada exitosamente a ${customer.name}`)
         
         // Log the automation execution
-        await this.logAutomationExecution(automation.id, customer.id, 'birthday', 'sent', message)
+        await this.logAutomationExecution(automation.id, customer.id, 'birthday', 'sent', `Template: ${templateName} | Promotion: ${promotion?.title || 'Default'}`)
       } else {
-        console.log(`❌ Error enviando mensaje a ${customer.name}`)
-        await this.logAutomationExecution(automation.id, customer.id, 'birthday', 'failed', message)
+        console.log(`❌ Error enviando plantilla a ${customer.name}:`, result?.message || 'Error desconocido')
+        await this.logAutomationExecution(automation.id, customer.id, 'birthday', 'failed', `Template: ${templateName} - Error: ${result?.message || 'Unknown error'}`)
       }
 
     } catch (error) {
       console.error(`Error enviando mensaje a ${customer.name}:`, error)
-      await this.logAutomationExecution(automation.id, customer.id, 'birthday', 'error', automation.message_template)
+      await this.logAutomationExecution(automation.id, customer.id, 'birthday', 'error', `Error: ${error}`)
     }
-  }
-
-  private async logAutomationExecution(
+  }  private async logAutomationExecution(
     automationId: string,
     customerId: string,
     triggerType: string,
@@ -213,6 +245,401 @@ export class AutomationService {
         }])
     } catch (error) {
       console.error('Error logging automation execution:', error)
+    }
+  }
+
+  // Process inactive customers automation
+  async processInactiveCustomersAutomations(): Promise<void> {
+    console.log('💤 Procesando automatizaciones de clientes inactivos...')
+
+    try {
+      const { data: automations, error: automationError } = await this.supabase
+        .from('automations')
+        .select('*')
+        .eq('automation_type', 'inactive_customers')
+        .eq('is_active', true)
+
+      if (automationError || !automations || automations.length === 0) {
+        console.log('No hay automatizaciones de clientes inactivos activas')
+        return
+      }
+
+      for (const automation of automations) {
+        await this.processSingleInactiveCustomersAutomation(automation)
+      }
+    } catch (error) {
+      console.error('Error procesando automatizaciones de clientes inactivos:', error)
+    }
+  }
+
+  private async processSingleInactiveCustomersAutomation(automation: Automation): Promise<void> {
+    console.log(`💤 Procesando automatización: ${automation.name}`)
+
+    try {
+      const daysAgo = automation.trigger_days || 30
+      const cutoffDate = new Date()
+      cutoffDate.setDate(cutoffDate.getDate() - daysAgo)
+
+      // Get customers who haven't interacted recently
+      const { data: customers, error: customerError } = await this.supabase
+        .from('customers')
+        .select('*')
+        .eq('business_id', automation.business_id)
+        .not('phone', 'is', null)
+        .lt('last_interaction', cutoffDate.toISOString())
+
+      if (customerError || !customers || customers.length === 0) {
+        console.log('No hay clientes inactivos para contactar')
+        return
+      }
+
+      console.log(`📊 Encontrados ${customers.length} clientes inactivos`)
+
+      // Filter based on target audience
+      let targetCustomers = customers
+      if (automation.target_audience === 'low_visits') {
+        // Customers with 1-3 visits (new customers)
+        targetCustomers = customers.filter(c => (c.visit_count || 0) <= 3)
+      } else if (automation.target_audience === 'high_visits') {
+        // Customers with 4+ visits (VIP customers)
+        targetCustomers = customers.filter(c => (c.visit_count || 0) >= 4)
+      }
+
+      console.log(`🎯 Enviando a ${targetCustomers.length} clientes de audiencia: ${automation.target_audience}`)
+
+      for (const customer of targetCustomers) {
+        await this.sendInactiveCustomerMessage(customer, automation)
+      }
+    } catch (error) {
+      console.error(`Error procesando automatización ${automation.name}:`, error)
+    }
+  }
+
+  private async sendInactiveCustomerMessage(customer: Customer, automation: Automation): Promise<void> {
+    try {
+      console.log(`💤 Enviando mensaje de reactivación a: ${customer.name} (${customer.phone})`)
+
+      // Get promotion if assigned
+      let promotion: Promotion | null = null
+      if (automation.promotion_id) {
+        console.log(`🎁 Obteniendo promoción ID: ${automation.promotion_id}`)
+        const { data: promoData } = await this.supabase
+          .from('promotions')
+          .select('*')
+          .eq('id', automation.promotion_id)
+          .eq('is_active', true)
+          .single()
+
+        if (promoData) {
+          promotion = promoData
+          console.log(`✅ Promoción encontrada: ${promoData.title}`)
+        }
+      }
+
+      // Determine template based on customer visit count
+      const isVipCustomer = (customer.visit_count || 0) >= 4
+      const templateName = isVipCustomer ? 'inactive_customer_vip' : 'inactive_customer_new'
+      
+      // Build promotion text
+      let promotionText = isVipCustomer ? '🍺 Descuento VIP exclusivo' : '🎯 Oferta especial para nuevos clientes'
+
+      if (promotion) {
+        promotionText = promotion.title
+        if (promotion.description) {
+          promotionText += ` - ${promotion.description}`
+        }
+        if (promotion.discount_percentage) {
+          promotionText += ` (${promotion.discount_percentage}% descuento)`
+        }
+      }
+      
+      const parameters = [
+        customer.name, // {{1}} Header: nombre del cliente
+        promotionText // {{1}} Body: promocion especial
+      ]
+
+      console.log(`💤 Enviando plantilla ${templateName} a ${customer.name} (${customer.phone})`)
+      console.log(`📋 Parámetros:`, parameters)
+      console.log(`🎁 Promoción aplicada:`, promotion ? promotion.title : 'Promoción por defecto')
+
+      // Send WhatsApp template message
+      const result = await this.whatsapp.sendTemplateWithParameters(customer.phone, templateName, parameters)
+      
+      if (result && !result.error) {
+        console.log(`✅ Plantilla ${templateName} enviada exitosamente a ${customer.name}`)
+        await this.logAutomationExecution(automation.id, customer.id, 'inactive_customers', 'sent', `Template: ${templateName} | Promotion: ${promotion?.title || 'Default'}`)
+      } else {
+        console.log(`❌ Error enviando plantilla a ${customer.name}:`, result?.message || 'Error desconocido')
+        await this.logAutomationExecution(automation.id, customer.id, 'inactive_customers', 'failed', `Template: ${templateName} - Error: ${result?.message || 'Unknown error'}`)
+      }
+    } catch (error) {
+      console.error(`Error enviando plantilla de reactivación a ${customer.name}:`, error)
+      const templateName = (customer.visit_count || 0) >= 4 ? 'inactive_customer_vip' : 'inactive_customer_new'
+      await this.logAutomationExecution(automation.id, customer.id, 'inactive_customers', 'error', `Template: ${templateName} - Error: ${error}`)
+    }
+  }
+
+  // Process points notification automation
+  async processPointsNotificationAutomations(): Promise<void> {
+    console.log('⭐ Procesando automatizaciones de notificación de puntos...')
+
+    try {
+      const { data: automations, error } = await this.supabase
+        .from('automations')
+        .select('*')
+        .eq('automation_type', 'points_notification')
+        .eq('is_active', true)
+
+      if (error || !automations || automations.length === 0) {
+        console.log('No hay automatizaciones de notificación de puntos activas')
+        return
+      }
+
+      for (const automation of automations) {
+        await this.processSinglePointsNotificationAutomation(automation)
+      }
+    } catch (error) {
+      console.error('Error procesando automatizaciones de puntos:', error)
+    }
+  }
+
+  private async processSinglePointsNotificationAutomation(automation: Automation): Promise<void> {
+    console.log(`⭐ Procesando automatización: ${automation.name}`)
+
+    try {
+      // Get recent point loads (last hour for immediate notifications)
+      const oneHourAgo = new Date()
+      oneHourAgo.setHours(oneHourAgo.getHours() - 1)
+
+      const { data: pointLoads, error } = await this.supabase
+        .from('point_loads')
+        .select(`
+          *,
+          customers:customer_id (
+            id, name, phone, points, business_id
+          )
+        `)
+        .eq('business_id', automation.business_id)
+        .gte('created_at', oneHourAgo.toISOString())
+
+      if (error || !pointLoads || pointLoads.length === 0) {
+        console.log('No hay cargas de puntos recientes')
+        return
+      }
+
+      console.log(`📊 Encontradas ${pointLoads.length} cargas de puntos recientes`)
+
+      for (const pointLoad of pointLoads) {
+        if (pointLoad.customers) {
+          await this.sendPointsNotificationMessage(pointLoad.customers, pointLoad, automation)
+        }
+      }
+    } catch (error) {
+      console.error(`Error procesando automatización ${automation.name}:`, error)
+    }
+  }
+
+  private async sendPointsNotificationMessage(customer: any, pointLoad: any, automation: Automation): Promise<void> {
+    try {
+      console.log(`⭐ Enviando notificación de puntos a: ${customer.name} (${customer.phone})`)
+
+      // Get promotion if assigned
+      let promotion: Promotion | null = null
+      if (automation.promotion_id) {
+        console.log(`🎁 Obteniendo promoción ID: ${automation.promotion_id}`)
+        const { data: promoData } = await this.supabase
+          .from('promotions')
+          .select('*')
+          .eq('id', automation.promotion_id)
+          .eq('is_active', true)
+          .single()
+
+        if (promoData) {
+          promotion = promoData
+          console.log(`✅ Promoción encontrada: ${promoData.title}`)
+        }
+      }
+
+      // Get next redeemable item
+      const { data: nextReward } = await this.supabase
+        .from('redeemable_items')
+        .select('*')
+        .eq('business_id', customer.business_id)
+        .eq('is_available', true)
+        .gte('points_required', customer.points)
+        .order('points_required', { ascending: true })
+        .limit(1)
+        .single()
+
+      // Build reward text with promotion if available
+      let rewardText = nextReward?.name || '⭐ Recompensas disponibles'
+      
+      if (promotion) {
+        rewardText = promotion.title
+        if (promotion.description) {
+          rewardText += ` - ${promotion.description}`
+        }
+        if (promotion.discount_percentage) {
+          rewardText += ` (${promotion.discount_percentage}% descuento)`
+        }
+      }
+
+      // Send WhatsApp template message
+      const templateName = 'points_notification'
+      const parameters = [
+        customer.name, // {{1}} nombre del cliente
+        pointLoad.points_awarded?.toString() || '50', // {{2}} puntos que acaba de sumar
+        rewardText // {{3}} recompensas disponibles o promoción
+      ]
+
+      console.log(`⭐ Enviando plantilla ${templateName} a ${customer.name} (${customer.phone})`)
+      console.log(`📋 Parámetros:`, parameters)
+      console.log(`🎁 Promoción aplicada:`, promotion ? promotion.title : 'Recompensa por defecto')
+
+      const result = await this.whatsapp.sendTemplateWithParameters(customer.phone, templateName, parameters)
+      
+      if (result && !result.error) {
+        console.log(`✅ Plantilla ${templateName} enviada exitosamente a ${customer.name}`)
+        await this.logAutomationExecution(automation.id, customer.id, 'points_notification', 'sent', `Template: ${templateName} | Promotion: ${promotion?.title || 'Default'}`)
+      } else {
+        console.log(`❌ Error enviando plantilla a ${customer.name}:`, result?.message || 'Error desconocido')
+        await this.logAutomationExecution(automation.id, customer.id, 'points_notification', 'failed', `Template: ${templateName} - Error: ${result?.message || 'Unknown error'}`)
+      }
+    } catch (error) {
+      console.error(`Error enviando plantilla de puntos a ${customer.name}:`, error)
+      const templateName = 'points_notification'
+      await this.logAutomationExecution(automation.id, customer.id, 'points_notification', 'error', `Template: ${templateName} - Error: ${error}`)
+    }
+  }
+
+  // Process missing fields automation
+  async processMissingFieldsAutomations(): Promise<void> {
+    console.log('📝 Procesando automatizaciones de campos faltantes...')
+
+    try {
+      const { data: automations, error } = await this.supabase
+        .from('automations')
+        .select('*')
+        .eq('automation_type', 'missing_field')
+        .eq('is_active', true)
+
+      if (error || !automations || automations.length === 0) {
+        console.log('No hay automatizaciones de campos faltantes activas')
+        return
+      }
+
+      for (const automation of automations) {
+        await this.processSingleMissingFieldsAutomation(automation)
+      }
+    } catch (error) {
+      console.error('Error procesando automatizaciones de campos faltantes:', error)
+    }
+  }
+
+  private async processSingleMissingFieldsAutomation(automation: Automation): Promise<void> {
+    console.log(`📝 Procesando automatización: ${automation.name}`)
+
+    try {
+      const daysAgo = automation.trigger_days || 3
+      const cutoffDate = new Date()
+      cutoffDate.setDate(cutoffDate.getDate() - daysAgo)
+
+      // Build query based on missing field type
+      let query = this.supabase
+        .from('customers')
+        .select('*')
+        .eq('business_id', automation.business_id)
+        .not('phone', 'is', null)
+        .gte('created_at', cutoffDate.toISOString())
+
+      // Filter by missing field
+      if (automation.missing_field_type === 'birthday') {
+        query = query.is('birthday', null)
+      } else if (automation.missing_field_type === 'email') {
+        query = query.is('email', null)
+      } else if (automation.missing_field_type === 'name') {
+        query = query.is('name', null)
+      }
+
+      const { data: customers, error } = await query
+
+      if (error || !customers || customers.length === 0) {
+        console.log('No hay clientes con campos faltantes para contactar')
+        return
+      }
+
+      console.log(`📊 Encontrados ${customers.length} clientes con campos faltantes`)
+
+      for (const customer of customers) {
+        await this.sendMissingFieldMessage(customer, automation)
+      }
+    } catch (error) {
+      console.error(`Error procesando automatización ${automation.name}:`, error)
+    }
+  }
+
+  private async sendMissingFieldMessage(customer: Customer, automation: Automation): Promise<void> {
+    try {
+      console.log(`📝 Enviando solicitud de datos a: ${customer.name || customer.phone}`)
+
+      // Get promotion if assigned
+      let promotion: Promotion | null = null
+      if (automation.promotion_id) {
+        console.log(`🎁 Obteniendo promoción ID: ${automation.promotion_id}`)
+        const { data: promoData } = await this.supabase
+          .from('promotions')
+          .select('*')
+          .eq('id', automation.promotion_id)
+          .eq('is_active', true)
+          .single()
+
+        if (promoData) {
+          promotion = promoData
+          console.log(`✅ Promoción encontrada: ${promoData.title}`)
+        }
+      }
+
+      const fieldNames: { [key: string]: string } = {
+        birthday: 'fecha de cumpleaños',
+        email: 'correo electrónico',
+        name: 'nombre completo'
+      }
+
+      // Build reward text
+      let rewardText = automation.points_reward?.toString() || '25'
+      
+      if (promotion && promotion.points_reward) {
+        rewardText = promotion.points_reward.toString()
+      }
+
+      // Send WhatsApp template message
+      const templateName = 'missing_data_request'
+      const missingFieldText = automation.missing_field_type === 'birthday' ? 'fecha de cumpleaños' :
+                              automation.missing_field_type === 'email' ? 'correo electrónico' : 'información de contacto'
+      
+      const parameters = [
+        customer.name || 'Cliente', // {{1}} nombre del cliente
+        missingFieldText, // {{2}} campo faltante
+        rewardText // {{3}} puntos de recompensa
+      ]
+
+      console.log(`📝 Enviando plantilla ${templateName} a ${customer.name || customer.phone}`)
+      console.log(`📋 Parámetros:`, parameters)
+      console.log(`🎁 Promoción aplicada:`, promotion ? promotion.title : 'Puntos por defecto')
+
+      const result = await this.whatsapp.sendTemplateWithParameters(customer.phone, templateName, parameters)
+      
+      if (result && !result.error) {
+        console.log(`✅ Plantilla ${templateName} enviada exitosamente a ${customer.name || customer.phone}`)
+        await this.logAutomationExecution(automation.id, customer.id, 'missing_field', 'sent', `Template: ${templateName} | Promotion: ${promotion?.title || 'Default'}`)
+      } else {
+        console.log(`❌ Error enviando plantilla a ${customer.name || customer.phone}:`, result?.message || 'Error desconocido')
+        await this.logAutomationExecution(automation.id, customer.id, 'missing_field', 'failed', `Template: ${templateName} - Error: ${result?.message || 'Unknown error'}`)
+      }
+    } catch (error) {
+      console.error(`Error enviando plantilla de datos faltantes a ${customer.name || customer.phone}:`, error)
+      const templateName = 'missing_data_request'
+      await this.logAutomationExecution(automation.id, customer.id, 'missing_field', 'error', `Template: ${templateName} - Error: ${error}`)
     }
   }
 

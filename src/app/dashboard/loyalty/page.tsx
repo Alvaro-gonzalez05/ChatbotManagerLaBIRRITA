@@ -98,9 +98,9 @@ interface Automation {
   promotion_id?: string
   points_reward?: number
   frequency_type: string
-  max_sends_per_customer: number
   missing_field_type?: string
   target_audience?: string
+  meta_template_name?: string
   created_at: string
 }
 
@@ -1280,98 +1280,108 @@ function LoyaltyPageContent() {
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
-                {/* Layout dividido en 2 columnas */}
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-
+                {/* Layout de dos columnas */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                  
                   {/* Columna izquierda - Automatizaciones */}
                   <div className="space-y-4">
                     <div className="flex items-center justify-between">
-                      <h3 className="font-semibold text-lg">Automatizaciones Predefinidas</h3>
+                      <h3 className="font-semibold text-lg">Automatizaciones</h3>
                       <Badge variant="secondary" className="gap-1">
                         <Zap className="h-3 w-3" />
-                        Templates Oficiales
+                        Sistema Predefinido
                       </Badge>
                     </div>
-                  
-                  {automations.length === 0 ? (
-                    <Card>
-                      <CardContent className="flex flex-col items-center justify-center py-12">
-                        <MessageCircle className="h-12 w-12 text-muted-foreground mb-4" />
-                        <h3 className="text-lg font-semibold mb-2">Configurando automatizaciones...</h3>
-                        <p className="text-muted-foreground text-center mb-6">
-                          Las automatizaciones predefinidas se están creando automáticamente
-                        </p>
-                        <Button 
-                          variant="outline"
-                          onClick={() => window.location.reload()} 
-                          className="gap-2"
-                        >
-                          <Settings className="h-4 w-4" />
-                          Actualizar
-                        </Button>
-                      </CardContent>
-                    </Card>
-                  ) : (
-                    <div className="space-y-4">
-                      {automations.slice(0, 5).map((automation) => {
-                        const config = getAutomationTypeConfig(automation.automation_type)
-                        const Icon = config.icon
-                        
-                        return (
-                          <Card key={automation.id} className="animate-slide-up">
-                            <CardContent className="p-4">
-                              <div className="flex items-center justify-between">
-                                <div className="flex items-center gap-3">
-                                  <Icon className="h-5 w-5" />
-                                  <div>
-                                    <h4 className="font-medium">{automation.name}</h4>
-                                    <p className="text-sm text-muted-foreground">{config.name}</p>
+                    
+                    {automations.length === 0 ? (
+                      <Card>
+                        <CardContent className="flex flex-col items-center justify-center py-12">
+                          <MessageCircle className="h-12 w-12 text-muted-foreground mb-4" />
+                          <h3 className="text-lg font-semibold mb-2">Configurando automatizaciones...</h3>
+                          <p className="text-muted-foreground text-center mb-6">
+                            Las automatizaciones se están creando automáticamente
+                          </p>
+                          <Button 
+                            variant="outline"
+                            onClick={() => window.location.reload()} 
+                            className="gap-2"
+                          >
+                            <Settings className="h-4 w-4" />
+                            Actualizar
+                          </Button>
+                        </CardContent>
+                      </Card>
+                    ) : (
+                      <div className="space-y-4">
+                        {automations.map((automation) => {
+                          const config = getAutomationTypeConfig(automation.automation_type)
+                          const Icon = config.icon
+                          
+                          return (
+                            <Card key={automation.id} className="animate-slide-up">
+                              <CardContent className="p-4">
+                                <div className="flex items-start justify-between mb-3">
+                                  <div className="flex items-center gap-3">
+                                    <div className={`p-2 rounded-lg ${
+                                      automation.is_active ? 'bg-green-100 text-green-600' : 'bg-gray-100 text-gray-600'
+                                    }`}>
+                                      <Icon className="h-4 w-4" />
+                                    </div>
+                                    <div>
+                                      <h4 className="font-medium text-sm">{automation.name}</h4>
+                                      <p className="text-xs text-muted-foreground">{config.description}</p>
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <Badge variant={automation.is_active ? "default" : "secondary"} className="text-xs">
+                                      {automation.is_active ? "Activa" : "Inactiva"}
+                                    </Badge>
+                                    <Switch
+                                      checked={automation.is_active}
+                                      onCheckedChange={() => toggleAutomation(automation.id, automation.is_active)}
+                                    />
                                   </div>
                                 </div>
-                                <div className="flex items-center gap-2">
-                                  <Badge variant={automation.is_active ? "default" : "secondary"}>
-                                    {automation.is_active ? "Activa" : "Inactiva"}
-                                  </Badge>
-                                  <Switch
-                                    checked={automation.is_active}
-                                    onCheckedChange={() => toggleAutomation(automation.id, automation.is_active)}
-                                  />
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={() => {
-                                      setEditingAutomation(automation)
-                                      setSelectedAutomationType(automation.automation_type)
-                                      setShowAutomationForm(true)
-                                    }}
-                                    className="h-8 w-8 p-0"
-                                  >
-                                    <Edit className="h-4 w-4" />
-                                  </Button>
-                                </div>
-                              </div>
-                              
-                              {automation.message_template && (
-                                <p className="text-xs text-muted-foreground mt-2 line-clamp-2">
-                                  {automation.message_template.substring(0, 100)}...
-                                </p>
-                              )}
-                              
-                              <div className="flex items-center gap-4 mt-2 text-xs text-muted-foreground">
-                                {automation.trigger_days && (
-                                  <span>Días: {automation.trigger_days}</span>
+                                
+                                {/* Configuración de Promoción */}
+                                {automation.automation_type !== 'points_notification' && (
+                                  <div className="mt-3 pt-3 border-t">
+                                    <div className="flex items-center justify-between mb-2">
+                                      <Label className="text-xs font-medium">Promoción Asociada</Label>
+                                      <Button
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => {
+                                          setEditingAutomation(automation)
+                                          setShowAutomationForm(true)
+                                        }}
+                                        className="h-7 text-xs"
+                                      >
+                                        <Edit className="h-3 w-3 mr-1" />
+                                        Configurar
+                                      </Button>
+                                    </div>
+                                    {automation.promotion_id ? (
+                                      <div className="p-2 bg-blue-50 rounded-md">
+                                        <p className="text-xs text-blue-800 font-medium">
+                                          🎁 Promoción configurada
+                                        </p>
+                                      </div>
+                                    ) : (
+                                      <div className="p-2 bg-yellow-50 rounded-md">
+                                        <p className="text-xs text-yellow-800 font-medium">
+                                          ⚠️ Sin promoción
+                                        </p>
+                                      </div>
+                                    )}
+                                  </div>
                                 )}
-                                {automation.points_reward && (
-                                  <span>Puntos: {automation.points_reward}</span>
-                                )}
-                                <span>Frecuencia: {automation.frequency_type}</span>
-                              </div>
-                            </CardContent>
-                          </Card>
-                        )
-                      })}
-                    </div>
-                  )}
+                              </CardContent>
+                            </Card>
+                          )
+                        })}
+                      </div>
+                    )}
                   </div>
 
                   {/* Columna derecha - Promociones */}
@@ -1710,104 +1720,34 @@ interface AutomationFormProps {
   onCancel: () => void
 }
 
-function AutomationForm({ automation, promotions, initialType, onSave, onCancel }: AutomationFormProps) {
+function AutomationForm({ automation, promotions, onSave, onCancel }: AutomationFormProps) {
   const { business } = useAuth()
-  const [formData, setFormData] = useState({
-    name: automation?.name || '',
-    automation_type: automation?.automation_type || initialType || 'birthday',
-    trigger_days: automation?.trigger_days || 7,
-    message_template: automation?.message_template || '',
-    promotion_id: automation?.promotion_id || '',
-    points_reward: automation?.points_reward || 0,
-    frequency_type: automation?.frequency_type || 'once',
-    max_sends_per_customer: automation?.max_sends_per_customer || 1,
-    is_active: automation?.is_active ?? true,
-    missing_field_type: automation?.missing_field_type || '',
-    target_audience: automation?.target_audience || 'all'
-  })
+  const [promotionId, setPromotionId] = useState(automation?.promotion_id || '')
   const [saving, setSaving] = useState(false)
   const supabase = createClient()
 
-  const automationTypes = [
-    {
-      type: 'birthday',
-      name: 'Cumpleaños',
-      icon: Calendar,
-      description: 'Envía mensajes automáticos antes del cumpleaños',
-      color: 'bg-pink-500',
-      defaultTemplate: '¡Hola {name}! 🎂 Se acerca tu cumpleaños y queremos celebrarlo contigo. ¡Tenemos una sorpresa especial esperándote!'
-    },
-    {
-      type: 'missing_field',
-      name: 'Campo Faltante',
-      icon: MessageCircle,
-      description: 'Solicita información faltante de clientes',
-      color: 'bg-purple-500',
-      defaultTemplate: '¡Hola {name}! Nos encantaría conocerte mejor. ¿Podrías compartir tu {missing_field}? Te daremos puntos extras.'
-    },
-    {
-      type: 'inactive_customers',
-      name: 'Clientes Inactivos',
-      icon: Users,
-      description: 'Reconecta con clientes que no vienen hace tiempo',
-      color: 'bg-red-500',
-      defaultTemplate: '¡Hola {name}! 💔 Te extrañamos en {business_name}. ¡Ven a visitarnos y disfruta de una promoción especial!'
-    },
-    {
-      type: 'points_notification',
-      name: 'Notificación de Puntos',
-      icon: Star,
-      description: 'Notifica cuando se cargan puntos automáticamente',
-      color: 'bg-yellow-500',
-      defaultTemplate: '¡Hola {name}! ⭐ Tienes {points} puntos acumulados. ¡Canjéalos por increíbles premios!'
-    }
-  ]
-
-  const selectedType = automationTypes.find(type => type.type === formData.automation_type)
-
-  useEffect(() => {
-    if (selectedType && !automation?.message_template && !formData.message_template) {
-      setFormData(prev => ({
-        ...prev,
-        message_template: selectedType.defaultTemplate
-      }))
-    }
-  }, [formData.automation_type, selectedType, automation])
+  if (!automation) return null
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!business?.id) return
+    if (!business?.id || !automation) return
 
     setSaving(true)
     try {
-      const dataToSave = {
-        ...formData,
-        business_id: business.id,
-        promotion_id: formData.promotion_id === 'none' ? null : formData.promotion_id || null,
-        points_reward: formData.points_reward || null,
-        trigger_days: formData.trigger_days || null,
-        missing_field_type: formData.missing_field_type || null,
-        target_audience: formData.target_audience || 'all'
-      }
+      const { error } = await supabase
+        .from('automations')
+        .update({ 
+          promotion_id: promotionId === 'none' ? null : promotionId || null,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', automation.id)
+      
+      if (error) throw error
 
-      if (automation) {
-        const { error } = await supabase
-          .from('automations')
-          .update(dataToSave)
-          .eq('id', automation.id)
-        
-        if (error) throw error
-      } else {
-        const { error } = await supabase
-          .from('automations')
-          .insert([dataToSave])
-        
-        if (error) throw error
-      }
-
+      toast.success('Promoción actualizada correctamente')
       onSave()
     } catch (error: any) {
-      toast.error('Error al guardar: ' + error.message)
+      toast.error('Error al actualizar promoción: ' + error.message)
     } finally {
       setSaving(false)
     }
@@ -1817,258 +1757,67 @@ function AutomationForm({ automation, promotions, initialType, onSave, onCancel 
     <form onSubmit={handleSubmit} className="space-y-6">
       <div className="space-y-4">
         <div>
-          <Label htmlFor="name">Nombre de la Automatización</Label>
-          <Input
-            id="name"
-            value={formData.name}
-            onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value }))}
-            placeholder="Ej: Recordatorio de Cumpleaños"
-            required
-          />
-        </div>
-
-        <div>
-          <Label htmlFor="type">Tipo de Automatización</Label>
+          <Label htmlFor="promotion">Promoción</Label>
           <Select
-            value={formData.automation_type}
-            onValueChange={(value) => setFormData(prev => ({ 
-              ...prev, 
-              automation_type: value as any,
-              message_template: automationTypes.find(t => t.type === value)?.defaultTemplate || ''
-            }))}
-            disabled={automation !== null}
+            value={promotionId || 'none'}
+            onValueChange={setPromotionId}
           >
             <SelectTrigger>
-              <SelectValue />
+              <SelectValue placeholder="Selecciona una promoción" />
             </SelectTrigger>
             <SelectContent>
-              {automationTypes.map((type) => (
-                <SelectItem key={type.type} value={type.type}>
-                  <div className="flex items-center gap-2">
-                    <type.icon className="h-4 w-4" />
-                    {type.name}
+              <SelectItem value="none">
+                <div className="flex items-center gap-2">
+                  <span>❌</span>
+                  <span>Sin promoción</span>
+                </div>
+              </SelectItem>
+              {promotions.map((promo) => (
+                <SelectItem key={promo.id} value={promo.id}>
+                  <div className="flex items-center justify-between w-full">
+                    <div>
+                      <span className="font-medium">{promo.title}</span>
+                      {promo.description && (
+                        <p className="text-xs text-muted-foreground truncate max-w-[200px]">
+                          {promo.description}
+                        </p>
+                      )}
+                    </div>
+                    <div className="text-right text-xs">
+                      {promo.discount_percentage && (
+                        <span className="text-green-600 font-semibold">
+                          {promo.discount_percentage}% OFF
+                        </span>
+                      )}
+                      {promo.points_reward && (
+                        <span className="text-blue-600 font-semibold">
+                          +{promo.points_reward} pts
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
         </div>
-
-        {selectedType?.type === 'birthday' && (
-          <div>
-            <Label htmlFor="trigger_days">Días antes del cumpleaños</Label>
-            <Input
-              id="trigger_days"
-              type="number"
-              min="1"
-              max="30"
-              value={formData.trigger_days}
-              onChange={(e) => setFormData(prev => ({ ...prev, trigger_days: parseInt(e.target.value) }))}
-            />
-          </div>
-        )}
-
-        {selectedType?.type === 'inactive_customers' && (
-          <div>
-            <Label htmlFor="trigger_days">Días sin actividad</Label>
-            <Input
-              id="trigger_days"
-              type="number"
-              min="7"
-              max="365"
-              value={formData.trigger_days}
-              onChange={(e) => setFormData(prev => ({ ...prev, trigger_days: parseInt(e.target.value) }))}
-            />
-          </div>
-        )}
-
-        {selectedType?.type === 'missing_field' && (
-          <>
-            <div>
-              <Label htmlFor="missing_field_type">Campo a solicitar</Label>
-              <Select
-                value={formData.missing_field_type}
-                onValueChange={(value) => setFormData(prev => ({ ...prev, missing_field_type: value }))}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Selecciona el campo faltante" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="instagram">Instagram</SelectItem>
-                  <SelectItem value="address">Dirección</SelectItem>
-                  <SelectItem value="birthday">Fecha de cumpleaños</SelectItem>
-                  <SelectItem value="email">Email</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <Label htmlFor="points_reward">Puntos a otorgar</Label>
-              <Input
-                id="points_reward"
-                type="number"
-                min="0"
-                value={formData.points_reward}
-                onChange={(e) => setFormData(prev => ({ ...prev, points_reward: parseInt(e.target.value) }))}
-              />
-            </div>
-          </>
-        )}
-
-        <div>
-          <Label htmlFor="message_template">Mensaje</Label>
-          <Textarea
-            id="message_template"
-            value={formData.message_template}
-            onChange={(e) => setFormData(prev => ({ ...prev, message_template: e.target.value }))}
-            placeholder="Escribe el mensaje que se enviará automáticamente..."
-            rows={4}
-            required
-          />
-          <p className="text-xs text-muted-foreground mt-1">
-            Variables disponibles: {'{name}'}, {'{business_name}'}, {'{points}'}
-          </p>
-        </div>
-
-        {promotions.length > 0 && (
-          <div>
-            <Label htmlFor="promotion">Promoción (Opcional)</Label>
-            <Select
-              value={formData.promotion_id}
-              onValueChange={(value) => setFormData(prev => ({ ...prev, promotion_id: value }))}
-            >
-              <SelectTrigger>
-                <SelectValue placeholder="Selecciona una promoción" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="none">Sin promoción</SelectItem>
-                {promotions.map((promo) => (
-                  <SelectItem key={promo.id} value={promo.id}>
-                    {promo.title}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        )}
-
-        <div>
-          <Label htmlFor="frequency">Frecuencia de envío</Label>
-          <Select
-            value={formData.frequency_type}
-            onValueChange={(value) => setFormData(prev => ({ ...prev, frequency_type: value }))}
-          >
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="once">Una vez</SelectItem>
-              <SelectItem value="daily">Diario</SelectItem>
-              <SelectItem value="weekly">Semanal</SelectItem>
-              <SelectItem value="monthly">Mensual</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-
-        <div>
-          <Label htmlFor="max_sends">Máximo envíos por cliente</Label>
-          <Input
-            id="max_sends"
-            type="number"
-            min="1"
-            max="10"
-            value={formData.max_sends_per_customer}
-            onChange={(e) => setFormData(prev => ({ ...prev, max_sends_per_customer: parseInt(e.target.value) }))}
-          />
-        </div>
-
-        {/* Configuración de Audiencia Objetivo */}
-        <div className="space-y-4 p-4 border rounded-lg">
-          <h4 className="font-medium flex items-center gap-2">
-            <Users className="h-4 w-4" />
-            Audiencia Objetivo
-          </h4>
-          
-          <div>
-            <Label htmlFor="target_audience">¿A quién enviar este mensaje?</Label>
-            <Select
-              value={formData.target_audience || 'all'}
-              onValueChange={(value) => setFormData(prev => ({ ...prev, target_audience: value }))}
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">📢 Todos los clientes activos</SelectItem>
-                <SelectItem value="birthday_near">🎂 Clientes con cumpleaños cerca</SelectItem>
-                <SelectItem value="high_visits">⭐ Clientes con más visitas (5+)</SelectItem>
-                <SelectItem value="low_visits">👋 Clientes con pocas visitas (1-2)</SelectItem>
-                <SelectItem value="missing_fields">📝 Clientes con campos incompletos</SelectItem>
-                <SelectItem value="new_points">🎯 Clientes que recién cargaron puntos</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          
-          {formData.target_audience === 'birthday_near' && (
-            <div className="p-3 bg-blue-50 rounded-lg">
-              <p className="text-sm text-blue-700">
-                💡 Se enviará a clientes cuyo cumpleaños esté dentro del rango configurado en "Días antes del cumpleaños"
-              </p>
-            </div>
-          )}
-          
-          {formData.target_audience === 'high_visits' && (
-            <div className="p-3 bg-purple-50 rounded-lg">
-              <p className="text-sm text-purple-700">
-                💡 Se enviará a clientes VIP con 5 o más visitas registradas
-              </p>
-            </div>
-          )}
-          
-          {formData.target_audience === 'low_visits' && (
-            <div className="p-3 bg-orange-50 rounded-lg">
-              <p className="text-sm text-orange-700">
-                💡 Se enviará a clientes nuevos con 1-2 visitas para motivar su regreso
-              </p>
-            </div>
-          )}
-          
-          {formData.target_audience === 'missing_fields' && (
-            <div className="p-3 bg-yellow-50 rounded-lg">
-              <p className="text-sm text-yellow-700">
-                💡 Se enviará a clientes sin fecha de cumpleaños, email o datos de contacto incompletos
-              </p>
-            </div>
-          )}
-          
-          {formData.target_audience === 'new_points' && (
-            <div className="p-3 bg-green-50 rounded-lg">
-              <p className="text-sm text-green-700">
-                💡 Se enviará a clientes que cargaron puntos en los últimos 7 días
-              </p>
-            </div>
-          )}
-          
-          <p className="text-xs text-muted-foreground">
-            Selecciona el grupo específico de clientes que recibirá esta automatización
-          </p>
-        </div>
-
-        <div className="flex items-center space-x-2">
-          <Switch
-            id="is_active"
-            checked={formData.is_active}
-            onCheckedChange={(checked) => setFormData(prev => ({ ...prev, is_active: checked }))}
-          />
-          <Label htmlFor="is_active">Automatización activa</Label>
-        </div>
       </div>
 
-      <div className="flex justify-end gap-2">
-        <Button type="button" variant="outline" onClick={onCancel}>
+      <div className="flex gap-2 pt-4">
+        <Button 
+          type="button" 
+          variant="outline" 
+          onClick={onCancel}
+          className="flex-1"
+        >
           Cancelar
         </Button>
-        <Button type="submit" disabled={saving}>
-          {saving ? 'Guardando...' : (automation ? 'Actualizar' : 'Crear')}
+        <Button 
+          type="submit" 
+          disabled={saving}
+          className="flex-1"
+        >
+          {saving ? 'Guardando...' : 'Guardar Promoción'}
         </Button>
       </div>
     </form>
@@ -2185,6 +1934,31 @@ function PromotionForm({ promotion, onSave, onCancel }: PromotionFormProps) {
     setSelectedFile(null)
     setPreviewUrl('')
     setFormData(prev => ({ ...prev, flyer_image_url: '' }))
+  }
+
+  const handleDelete = async () => {
+    if (!promotion?.id || !business?.id) return
+
+    if (!confirm('¿Estás seguro de que quieres borrar esta promoción? Esta acción no se puede deshacer.')) {
+      return
+    }
+
+    setSaving(true)
+    try {
+      const { error } = await supabase
+        .from('promotions')
+        .delete()
+        .eq('id', promotion.id)
+
+      if (error) throw error
+
+      toast.success('Promoción eliminada correctamente')
+      onSave()
+    } catch (error: any) {
+      toast.error('Error al eliminar la promoción: ' + error.message)
+    } finally {
+      setSaving(false)
+    }
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -2417,13 +2191,27 @@ function PromotionForm({ promotion, onSave, onCancel }: PromotionFormProps) {
         </div>
       </div>
 
-      <div className="flex justify-end gap-2">
-        <Button type="button" variant="outline" onClick={onCancel}>
-          Cancelar
-        </Button>
-        <Button type="submit" disabled={saving}>
-          {saving ? 'Guardando...' : (promotion ? 'Actualizar' : 'Crear')}
-        </Button>
+      <div className="flex justify-between gap-2">
+        {promotion && (
+          <Button 
+            type="button" 
+            variant="destructive" 
+            onClick={handleDelete}
+            disabled={saving}
+            className="gap-2"
+          >
+            <Trash2 className="h-4 w-4" />
+            Borrar Promoción
+          </Button>
+        )}
+        <div className="flex gap-2 ml-auto">
+          <Button type="button" variant="outline" onClick={onCancel}>
+            Cancelar
+          </Button>
+          <Button type="submit" disabled={saving}>
+            {saving ? 'Guardando...' : (promotion ? 'Actualizar' : 'Crear')}
+          </Button>
+        </div>
       </div>
     </form>
   )
