@@ -405,7 +405,91 @@ export class AutomationEventSystem {
     }
   }
 
-  // 📝 HELPER: Log de automatización
+  // � VIP EVALUATION: Evaluación automática diaria de clientes VIP
+  async checkVipEvaluation(): Promise<void> {
+    console.log('👑 Iniciando evaluación VIP automática...')
+    
+    try {
+      // Obtener todos los negocios con configuración VIP
+      const { data: businesses, error: businessError } = await this.supabase
+        .from('loyalty_settings')
+        .select('business_id, vip_criteria')
+        .not('vip_criteria', 'is', null)
+
+      if (businessError) throw businessError
+
+      let totalPromoted = 0
+      let processedBusinesses = 0
+
+      for (const business of businesses || []) {
+        if (!business.vip_criteria) continue
+
+        console.log(`📊 Procesando business: ${business.business_id}`)
+        
+        // Obtener todos los clientes del negocio
+        const { data: customers, error: customerError } = await this.supabase
+          .from('customers')
+          .select('*')
+          .eq('business_id', business.business_id)
+
+        if (customerError) {
+          console.error(`❌ Error obteniendo customers para ${business.business_id}:`, customerError)
+          continue
+        }
+
+        const criteria = business.vip_criteria
+        const now = new Date()
+        const oneMonthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
+        let businessPromoted = 0
+
+        for (const customer of customers || []) {
+          const lastInteraction = new Date(customer.last_interaction)
+          const isRecentlyActive = lastInteraction >= oneMonthAgo
+
+          // Calcular actividad mensual
+          const monthlyVisits = isRecentlyActive ? customer.visit_count : 0
+          const monthlySpending = isRecentlyActive ? customer.total_spent * 0.3 : 0
+
+          // Evaluar criterios VIP
+          const shouldBeVip = (
+            monthlyVisits >= (criteria.min_visits || 5) &&
+            monthlySpending >= (criteria.min_spending || 1000) &&
+            (customer.points || 0) >= (criteria.min_points || 100)
+          )
+
+          // Actualizar status VIP si es necesario
+          if (shouldBeVip && !customer.vip_status) {
+            await this.supabase
+              .from('customers')
+              .update({ vip_status: true })
+              .eq('id', customer.id)
+
+            console.log(`👑 Cliente promovido a VIP: ${customer.name}`)
+            businessPromoted++
+            totalPromoted++
+          } else if (!shouldBeVip && customer.vip_status) {
+            await this.supabase
+              .from('customers')
+              .update({ vip_status: false })
+              .eq('id', customer.id)
+
+            console.log(`📉 Cliente removido de VIP: ${customer.name}`)
+          }
+        }
+
+        console.log(`✅ Business ${business.business_id}: ${businessPromoted} clientes promovidos`)
+        processedBusinesses++
+      }
+
+      console.log(`🎉 Evaluación VIP completada: ${totalPromoted} promociones en ${processedBusinesses} negocios`)
+
+    } catch (error) {
+      console.error('❌ Error en evaluación VIP:', error)
+      throw error
+    }
+  }
+
+  // �📝 HELPER: Log de automatización
   private async logAutomation(
     automationId: string,
     customerId: string,

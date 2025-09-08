@@ -14,6 +14,18 @@ export async function GET(request: NextRequest) {
     
     switch (eventType) {
       
+      case 'daily':
+        // 🌅 Evento diario combinado: cumpleaños + evaluación VIP
+        console.log('🌅 Ejecutando automatizaciones diarias...')
+        await eventSystem.checkBirthdaysDaily()
+        await eventSystem.checkVipEvaluation()
+        return NextResponse.json({ 
+          status: 'success', 
+          event: 'daily', 
+          message: 'Automatizaciones diarias completadas (cumpleaños + VIP)',
+          timestamp: new Date().toISOString()
+        })
+      
       case 'birthdays':
         // 🎂 Evento diario optimizado de cumpleaños
         await eventSystem.checkBirthdaysDaily()
@@ -42,13 +54,13 @@ export async function GET(request: NextRequest) {
           business_id: businessId || 'f2a24619-5016-490c-9dc9-dd08fd6549b3',
           name: 'Cliente Test',
           phone: '5491234567890',
-          email: null,
-          instagram_username: null,
-          birthday: null,
+          email: undefined,
+          instagram_username: undefined,
+          birthday: undefined,
           points: 0,
           created_at: new Date().toISOString(),
           last_interaction: new Date().toISOString(),
-          visit_count: 0
+          visit_count: 1
         }
         
         await eventSystem.onCustomerRegistered(testCustomer)

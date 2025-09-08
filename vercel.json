@@ -1,16 +1,12 @@
 {
   "crons": [
     {
-      "path": "/api/automation-events?event=birthdays",
+      "path": "/api/automation-events?event=daily",
       "schedule": "0 8 * * *"
     },
     {
       "path": "/api/automation-events?event=inactive",
       "schedule": "0 20 * * 1"
-    },
-    {
-      "path": "/api/cron/vip-evaluation",
-      "schedule": "0 2 * * *"
     }
   ]
 }
