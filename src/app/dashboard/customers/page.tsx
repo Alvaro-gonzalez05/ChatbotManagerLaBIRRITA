@@ -160,6 +160,95 @@ export default function CustomersPage() {
     }
   }
 
+  // Función para otorgar puntos de bienvenida a nuevos clientes
+  const awardWelcomePointsToNewCustomer = async (customerId: string, businessId: string, customerData?: any) => {
+    try {
+      console.log('🎁 Starting welcome points process for customer:', customerId)
+
+      // Obtener configuración de loyalty
+      const { data: loyaltySettings, error: loyaltyError } = await supabase
+        .from('loyalty_settings')
+        .select('welcome_points')
+        .eq('business_id', businessId)
+        .single()
+
+      if (loyaltyError || !loyaltySettings?.welcome_points || loyaltySettings.welcome_points <= 0) {
+        console.log('No welcome points configured')
+        return
+      }
+
+      const welcomePoints = loyaltySettings.welcome_points
+      console.log('🎁 Welcome points configured:', welcomePoints)
+
+      // Usar los datos del cliente que ya tenemos
+      const customerPhone = customerData?.phone || customerData?.phone_number || ''
+      console.log('✅ Using customer phone:', customerPhone)
+
+      // Actualizar puntos del cliente
+      const { error: updateError } = await supabase
+        .from('customers')
+        .update({ points: welcomePoints })
+        .eq('id', customerId)
+
+      if (updateError) {
+        console.error('Error updating customer points:', updateError)
+        return
+      }
+
+      // Verificar si ya se otorgaron puntos de bienvenida antes (simplificado)
+      const { data: existingPointLoads, error: checkError } = await supabase
+        .from('point_loads')
+        .select('id')
+        .eq('customer_id', customerId)
+        .eq('amount_spent', 0)
+        .gte('points_awarded', 50) // Puntos que indican bienvenida
+
+      if (checkError) {
+        console.error('Error checking existing point loads:', checkError)
+        // Continuar aunque haya error en el check
+      }
+
+      if (existingPointLoads && existingPointLoads.length > 0) {
+        console.log('⚠️ Welcome points already awarded to this customer')
+        toast.info('Los puntos de bienvenida ya fueron otorgados a este cliente')
+        return
+      }
+
+      // Registrar la carga de puntos (loaded_by como null para sistema)
+      console.log('📝 Inserting point load record with data:', {
+        business_id: businessId,
+        customer_id: customerId,
+        customer_phone: customerPhone,
+        amount_spent: 0,
+        points_awarded: welcomePoints,
+        loaded_by: null
+      })
+
+      const { error: pointLoadError } = await supabase
+        .from('point_loads')
+        .insert({
+          business_id: businessId,
+          customer_id: customerId,
+          customer_phone: customerPhone,
+          amount_spent: 0,
+          points_awarded: welcomePoints,
+          loaded_by: null
+        })
+
+      if (pointLoadError) {
+        console.error('Error recording point load:', pointLoadError)
+        console.error('Point load error details:', JSON.stringify(pointLoadError, null, 2))
+        return
+      }
+
+      console.log(`✅ Welcome points awarded: ${welcomePoints} points to customer ${customerId}`)
+      toast.success(`¡${welcomePoints} puntos de bienvenida otorgados!`)
+
+    } catch (error) {
+      console.error('Error awarding welcome points:', error)
+    }
+  }
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     
@@ -178,7 +267,7 @@ export default function CustomersPage() {
         email: formData.email || null,
         instagram_username: formData.instagram_username || null,
         birthday: formData.birthday || null,
-        points: formData.points,
+        points: editingCustomer ? formData.points : 0, // Nuevos clientes empiezan con 0 puntos
         notes: formData.notes || null,
         tags: formData.tags.length > 0 ? formData.tags : null,
         status: 'active'
@@ -195,11 +284,24 @@ export default function CustomersPage() {
         toast.success('Cliente actualizado correctamente')
       } else {
         // Create new customer
-        const { error } = await supabase
+        const { data: newCustomer, error } = await supabase
           .from('customers')
           .insert(customerData)
+          .select()
+          .single()
         
         if (error) throw error
+
+        console.log('✅ Customer created successfully:', newCustomer)
+
+        // Otorgar puntos de bienvenida si está configurado
+        if (business?.id && newCustomer?.id) {
+          console.log('🎁 Attempting to award welcome points to customer:', newCustomer.id)
+          await awardWelcomePointsToNewCustomer(newCustomer.id, business.id, newCustomer)
+        } else {
+          console.log('⚠️ Missing business ID or customer ID for welcome points')
+        }
+        
         toast.success('Cliente creado correctamente')
       }
 
@@ -337,9 +439,16 @@ export default function CustomersPage() {
     }
   }
 
+  const isCustomerVip = (customer: Customer) => {
+    return customer.tags && customer.tags.includes('VIP')
+  }
+
   const formatDate = (dateString: string | null) => {
     if (!dateString) return '-'
-    return new Date(dateString).toLocaleDateString('es-ES')
+    // Para fechas de cumpleaños que son solo YYYY-MM-DD, agregar hora local para evitar cambio de zona horaria
+    const [year, month, day] = dateString.split('T')[0].split('-')
+    const localDate = new Date(parseInt(year), parseInt(month) - 1, parseInt(day))
+    return localDate.toLocaleDateString('es-ES')
   }
 
   const formatPhone = (phone: string) => {
@@ -526,7 +635,7 @@ export default function CustomersPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold text-purple-600">
-              {customers.filter(c => c.status === 'vip').length}
+              {customers.filter(c => isCustomerVip(c)).length}
             </div>
           </CardContent>
         </Card>
@@ -578,6 +687,7 @@ export default function CustomersPage() {
                     <TableHead>Nombre</TableHead>
                     <TableHead>Contacto</TableHead>
                     <TableHead>Puntos</TableHead>
+                    <TableHead>VIP</TableHead>
                     <TableHead>Cumpleaños</TableHead>
                     <TableHead>Última Interacción</TableHead>
                     <TableHead>Estado</TableHead>
@@ -623,6 +733,16 @@ export default function CustomersPage() {
                         <Badge variant="secondary" className="font-mono">
                           {customer.points.toLocaleString()}
                         </Badge>
+                      </TableCell>
+                      
+                      <TableCell>
+                        {isCustomerVip(customer) ? (
+                          <Badge className="bg-purple-100 text-purple-800 border-purple-200">
+                            ⭐ VIP
+                          </Badge>
+                        ) : (
+                          <span className="text-muted-foreground text-sm">-</span>
+                        )}
                       </TableCell>
                       
                       <TableCell>

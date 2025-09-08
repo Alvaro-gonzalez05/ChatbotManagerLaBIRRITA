@@ -44,10 +44,10 @@ export const WhatsAppTemplates: Record<string, TemplateConfig> = {
     language: 'es_AR',
     hasHeader: false,
     headerParameters: 0,
-    bodyParameters: 3, // nombre del cliente, puntos sumados, recompensas disponibles
+    bodyParameters: 3, // nombre del cliente, puntos sumados, información de recompensas
     hasFooter: true,
     hasButtons: true,
-    description: 'Notificación de puntos cargados'
+    description: 'Notificación de puntos cargados (3 parámetros: nombre, puntos, recompensas)'
   },
 
   inactive_customer_vip: {

@@ -19,7 +19,7 @@ export async function POST(request: NextRequest) {
     } = await request.json()
 
     // Buscar la próxima recompensa disponible
-    const { data: nextReward } = await supabase
+    const { data: nextRewardData } = await supabase
       .from('redeemable_items')
       .select('*')
       .eq('business_id', businessId)
@@ -27,7 +27,8 @@ export async function POST(request: NextRequest) {
       .gte('points_required', totalPoints)
       .order('points_required', { ascending: true })
       .limit(1)
-      .single()
+
+    const nextReward = nextRewardData?.[0]
 
     // Construir mensaje usando plantilla
     let message = `¡Hola ${customerName}! Cargaste ${pointsAdded} puntos 🎯`
@@ -49,12 +50,16 @@ export async function POST(request: NextRequest) {
     // Enviar plantilla de WhatsApp
     const whatsapp = new WhatsAppBusinessApiService()
     const metaTemplateName = 'points_notification'
+    
+    // Template expects only 3 parameters: nombre, puntos sumados, recompensas disponibles
+    const rewardInfo = nextReward && nextReward.name && nextReward.points_required !== undefined
+      ? `${nextReward.name} (faltan ${nextReward.points_required - totalPoints} puntos)`
+      : 'Consulta las recompensas disponibles'
+    
     const parameters = [
-      customerName, // {{1}}
-      pointsAdded.toString(), // {{2}}
-      totalPoints.toString(), // {{3}}
-      nextReward?.name || 'Próxima recompensa', // {{4}}
-      nextReward ? (nextReward.points_required - totalPoints).toString() : '0' // {{5}}
+      customerName, // {{1}} - nombre del cliente
+      pointsAdded.toString(), // {{2}} - puntos sumados  
+      rewardInfo // {{3}} - recompensas disponibles (combined reward name and points needed)
     ]
 
     const result = await whatsapp.sendTemplateWithParameters(customerPhone, metaTemplateName, parameters)

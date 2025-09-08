@@ -50,6 +50,9 @@ interface BusinessInfo {
   address: string
   phone: string
   email: string
+  instagram_url: string
+  location_url: string
+  transfer_alias: string
   working_hours: any
   categories: string[]
   specialties: string[]
@@ -70,7 +73,16 @@ export default function BotConfigurationPage() {
     fallback_message: 'Disculpa, no entendí bien tu consulta. ¿Podrías reformular tu pregunta? Puedo ayudarte con reservas, información del restaurante y puntos de fidelidad.',
     out_of_hours_message: 'Gracias por contactarnos. En este momento estamos cerrados, pero te responderemos lo antes posible.',
     capabilities: ['reservas', 'informacion', 'puntos'],
-    reservation_settings: {}
+    reservation_settings: {
+      warnings: [
+        "⚠️ Si queres asegurar tu lugar, será obligatorio abonar una seña.",
+        "⚠️ Tolerancia de reserva hasta las 22hs, luego, se pierde el lugar (SIN EXCEPCIÓN)",
+        "⚠️ Menores de 18 años pueden permanecer en el bar hasta 1am."
+      ],
+      deposit_amount: 1000,
+      requires_deposit: true,
+      deposit_per_person: true
+    }
   })
   
   const [businessInfo, setBusinessInfo] = useState<BusinessInfo>({
@@ -79,6 +91,9 @@ export default function BotConfigurationPage() {
     address: '',
     phone: '',
     email: '',
+    instagram_url: '',
+    location_url: '',
+    transfer_alias: '',
     working_hours: {},
     categories: [],
     specialties: []
@@ -256,6 +271,9 @@ export default function BotConfigurationPage() {
           address: business.address || 'Av. San Martín 123, Mendoza',
           phone: business.phone || '+54 261 123 4567',
           email: business.email || 'info@mirestaurante.com',
+          instagram_url: '',
+          location_url: '',
+          transfer_alias: '',
           working_hours: business.working_hours || {
             monday: { open: '10:00', close: '22:00' },
             tuesday: { open: '10:00', close: '22:00' },
@@ -278,6 +296,9 @@ export default function BotConfigurationPage() {
           address: data.address || '',
           phone: data.phone || '',
           email: data.email || '',
+          instagram_url: data.instagram_url || '',
+          location_url: data.location_url || '',
+          transfer_alias: data.transfer_alias || '',
           working_hours: data.working_hours || {},
           categories: data.categories || [],
           specialties: data.specialties || []
@@ -292,6 +313,9 @@ export default function BotConfigurationPage() {
         address: business?.address || 'Dirección no disponible',
         phone: business?.phone || 'Teléfono no disponible',
         email: business?.email || 'email@negocio.com',
+        instagram_url: '',
+        location_url: '',
+        transfer_alias: '',
         working_hours: business?.working_hours || {},
         categories: business?.categories || [],
         specialties: business?.specialties || []
@@ -613,6 +637,33 @@ export default function BotConfigurationPage() {
                       value={businessInfo.address}
                       onChange={(e) => setBusinessInfo({...businessInfo, address: e.target.value})}
                       placeholder="Calle Falsa 123, Ciudad"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>Instagram URL</Label>
+                    <Input
+                      value={businessInfo.instagram_url}
+                      onChange={(e) => setBusinessInfo({...businessInfo, instagram_url: e.target.value})}
+                      placeholder="https://instagram.com/tunegocio"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>Link de Ubicación (Google Maps)</Label>
+                    <Input
+                      value={businessInfo.location_url}
+                      onChange={(e) => setBusinessInfo({...businessInfo, location_url: e.target.value})}
+                      placeholder="https://maps.google.com/..."
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>Alias para Transferencias</Label>
+                    <Input
+                      value={businessInfo.transfer_alias}
+                      onChange={(e) => setBusinessInfo({...businessInfo, transfer_alias: e.target.value})}
+                      placeholder="mi.negocio.mp"
                     />
                   </div>
 

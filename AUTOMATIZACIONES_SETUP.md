@@ -3,34 +3,79 @@
 ## ✅ Automatizaciones Implementadas
 
 ### 1. 🎂 **Recordatorio de Cumpleaños**
-- **Cuándo:** 7 días antes del cumpleaños (configurable)
+- **Cuándo:** 7 días antes del cumpleaños
+- **Horario:** Todos los días a las 00:00 hs
 - **Audiencia:** Clientes con cumpleaños registrado
 - **Plantilla Meta:** `birthday_reminder`
 - **Promociones:** ✅ Configurable desde dashboard
-- **Frecuencia:** Una vez, Diario, Semanal, Mensual
+- **Frecuencia:** Diario
 
-### 2. ⭐ **Notificación de Puntos**
-- **Cuándo:** Inmediato tras cargar puntos (1 hora de ventana)
+### 2. 🎁 **Puntos de Cumpleaños**
+- **Cuándo:** El día exacto del cumpleaños
+- **Horario:** Todos los días a las 00:00 hs
+- **Audiencia:** Clientes con cumpleaños registrado
+- **Puntos:** Configurables desde dashboard (default: 100)
+- **Automático:** ✅ Se otorgan automáticamente
+
+### 3. ⭐ **Notificación de Puntos**
+- **Cuándo:** Inmediato tras cargar puntos desde dashboard
+- **Horario:** Automático (cuando se cargan puntos manualmente)
 - **Audiencia:** Clientes que recién cargaron puntos  
 - **Plantilla Meta:** `points_notification`
 - **Promociones:** ✅ Opcional
-- **Frecuencia:** Inmediato, Diario, Semanal
 
-### 3. 💤 **Clientes Inactivos**
+### 4. 💤 **Clientes Inactivos**
 - **Cuándo:** 30 días sin interacción (configurable)
+- **Horario:** Todos los días a las 17:00 hs (5 PM)
 - **Audiencias:** 
   - **VIP:** 4+ visitas (`inactive_customer_vip`)
   - **Nuevos:** 1-3 visitas (`inactive_customer_new`)
 - **Promociones:** ✅ Configurable
-- **Frecuencia:** Una vez, Semanal, Mensual
+- **Frecuencia:** Diario
 
-### 4. 📝 **Campos Faltantes**
+### 5. 📝 **Campos Faltantes**
 - **Cuándo:** 3 días después de registro sin datos (configurable)
+- **Horario:** Todos los días a las 17:00 hs (5 PM)
 - **Audiencia:** Clientes con información incompleta
 - **Campos:** Cumpleaños, Email, Nombre
 - **Plantilla Meta:** `missing_data_request`
 - **Promociones:** ✅ Opcional
-- **Frecuencia:** Una vez, Semanal
+- **Frecuencia:** Diario
+- **🤖 Bot Intelligence:** El bot puede capturar automáticamente:
+  - **Emails:** patron@email.com
+  - **Fechas:** 15/03/1990, 15-03-1990, 15 de marzo
+  - **Nombres:** Solo texto sin números ni símbolos
+
+## ⏰ Horarios de Ejecución Configurados
+
+### Cron Jobs en Vercel (Producción)
+```json
+{
+  "crons": [
+    {
+      "path": "/api/cron/birthday-automations",
+      "schedule": "0 0 * * *"    // 00:00 hs todos los días
+    },
+    {
+      "path": "/api/cron/points-notifications", 
+      "schedule": "0 * * * *"    // Cada hora (para procesar puntos pendientes)
+    },
+    {
+      "path": "/api/cron/inactive-customers",
+      "schedule": "0 17 * * *"   // 17:00 hs (5 PM) todos los días
+    },
+    {
+      "path": "/api/cron/missing-fields",
+      "schedule": "0 17 * * *"   // 17:00 hs (5 PM) todos los días
+    }
+  ]
+}
+```
+
+### Explicación de Schedules (Cron Format)
+- `0 0 * * *` = Minuto 0, Hora 0, Todos los días → **00:00 hs diario**
+- `0 17 * * *` = Minuto 0, Hora 17, Todos los días → **17:00 hs (5 PM) diario**
+- `0 * * * *` = Minuto 0 de cada hora → **Cada hora**
 
 ## 🔧 Pasos de Configuración
 

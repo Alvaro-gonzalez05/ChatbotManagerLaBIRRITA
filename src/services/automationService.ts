@@ -57,8 +57,22 @@ export class AutomationService {
     await Promise.all([
       this.processBirthdayAutomations(),
       this.processInactiveCustomersAutomations(),
-      this.processPointsNotificationAutomations(),
+      // ⭐ Points notifications are now AUTOMATIC when points are loaded
+      // this.processPointsNotificationAutomations(),
       this.processMissingFieldsAutomations()
+    ])
+  }
+
+  // Process automations for a specific business
+  async processBusinessAutomations(businessId: string): Promise<void> {
+    console.log(`🏢 Procesando automatizaciones para business: ${businessId}`)
+    
+    await Promise.all([
+      this.processBirthdayAutomationsByBusiness(businessId),
+      this.processInactiveCustomersAutomationsByBusiness(businessId),
+      // ⭐ Points notifications are now AUTOMATIC when points are loaded
+      // this.processPointsNotificationAutomationsByBusiness(businessId),
+      this.processMissingFieldsAutomationsByBusiness(businessId)
     ])
   }
 
@@ -102,14 +116,15 @@ export class AutomationService {
       // Calculate target date (today + trigger_days)
       const today = new Date()
       const targetDate = new Date(today)
-      targetDate.setDate(today.getDate() + (automation.trigger_days || 7))
+      const triggerDays = automation.trigger_days ?? 7 // Usar ?? en lugar de ||
+      targetDate.setDate(today.getDate() + triggerDays)
 
       // Format date as MM-DD for birthday comparison
       const targetMonth = String(targetDate.getMonth() + 1).padStart(2, '0')
       const targetDay = String(targetDate.getDate()).padStart(2, '0')
       const birthdayFilter = `${targetMonth}-${targetDay}`
 
-      console.log(`🔍 Buscando cumpleaños para: ${birthdayFilter} (en ${automation.trigger_days || 7} días)`)
+      console.log(`🔍 Buscando cumpleaños para: ${birthdayFilter} (en ${triggerDays} días)`)
 
       // Get customers with birthdays on target date
       const { data: customers, error: customerError } = await this.supabase
@@ -180,9 +195,23 @@ export class AutomationService {
         }
       }
 
-      // Build promotion text
+      // Build promotion text and get birthday points from loyalty settings
       let promotionText = '🎂 Celebración especial de cumpleaños'
-      let pointsReward = '100'
+      let pointsReward = '100' // Default fallback
+
+      // Get birthday points from loyalty settings
+      const { data: loyaltySettings, error: loyaltyError } = await this.supabase
+        .from('loyalty_settings')
+        .select('birthday_bonus_points')
+        .eq('business_id', automation.business_id)
+        .single()
+
+      if (!loyaltyError && loyaltySettings?.birthday_bonus_points) {
+        pointsReward = loyaltySettings.birthday_bonus_points.toString()
+        console.log(`🎂 Puntos de cumpleaños configurados: ${pointsReward}`)
+      } else {
+        console.log('⚠️ No se encontraron puntos de cumpleaños configurados, usando 100 por defecto')
+      }
 
       if (promotion) {
         promotionText = promotion.title
@@ -192,11 +221,18 @@ export class AutomationService {
         if (promotion.discount_percentage) {
           promotionText += ` (${promotion.discount_percentage}% descuento)`
         }
-        pointsReward = promotion.points_reward?.toString() || automation.points_reward?.toString() || '100'
-      } else if (automation.points_reward) {
-        pointsReward = automation.points_reward.toString()
+        // Los puntos de cumpleaños se mantienen desde loyalty_settings
       }
 
+      // **SI ES EL DÍA EXACTO DEL CUMPLEAÑOS (trigger_days = 0), SOLO OTORGAR PUNTOS SIN ENVIAR MENSAJE**
+      if (automation.trigger_days === 0) {
+        console.log(`🎂 Es el día del cumpleaños de ${customer.name}, otorgando puntos...`)
+        await this.awardBirthdayPoints(customer, automation.business_id, parseInt(pointsReward))
+        await this.logAutomationExecution(automation.id, customer.id, 'birthday', 'points_awarded', `Points awarded: ${pointsReward}`)
+        return // No enviar mensaje para puntos de cumpleaños
+      }
+
+      // **SOLO ENVIAR MENSAJE SI NO ES EL DÍA EXACTO (trigger_days > 0)**
       // Send WhatsApp template message
       const templateName = 'birthday_reminder'
       const parameters = [
@@ -213,9 +249,10 @@ export class AutomationService {
       
       if (result && !result.error) {
         console.log(`✅ Plantilla ${templateName} enviada exitosamente a ${customer.name}`)
+        console.log(`📅 Mensaje enviado ${automation.trigger_days} días antes del cumpleaños. Los puntos se otorgarán el día exacto.`)
         
         // Log the automation execution
-        await this.logAutomationExecution(automation.id, customer.id, 'birthday', 'sent', `Template: ${templateName} | Promotion: ${promotion?.title || 'Default'}`)
+        await this.logAutomationExecution(automation.id, customer.id, 'birthday', 'sent', `Template: ${templateName} | Promotion: ${promotion?.title || 'Default'} | Reminder sent`)
       } else {
         console.log(`❌ Error enviando plantilla a ${customer.name}:`, result?.message || 'Error desconocido')
         await this.logAutomationExecution(automation.id, customer.id, 'birthday', 'failed', `Template: ${templateName} - Error: ${result?.message || 'Unknown error'}`)
@@ -225,7 +262,9 @@ export class AutomationService {
       console.error(`Error enviando mensaje a ${customer.name}:`, error)
       await this.logAutomationExecution(automation.id, customer.id, 'birthday', 'error', `Error: ${error}`)
     }
-  }  private async logAutomationExecution(
+  }
+
+  private async logAutomationExecution(
     automationId: string,
     customerId: string,
     triggerType: string,
@@ -238,9 +277,8 @@ export class AutomationService {
         .insert([{
           automation_id: automationId,
           customer_id: customerId,
-          trigger_type: triggerType,
+          message_sent: messageContent,
           status: status,
-          message_content: messageContent,
           sent_at: new Date().toISOString()
         }])
     } catch (error) {
@@ -557,6 +595,8 @@ export class AutomationService {
         query = query.is('birthday', null)
       } else if (automation.missing_field_type === 'email') {
         query = query.is('email', null)
+      } else if (automation.missing_field_type === 'instagram_username') {
+        query = query.is('instagram_username', null)
       } else if (automation.missing_field_type === 'name') {
         query = query.is('name', null)
       }
@@ -602,6 +642,7 @@ export class AutomationService {
       const fieldNames: { [key: string]: string } = {
         birthday: 'fecha de cumpleaños',
         email: 'correo electrónico',
+        instagram_username: 'usuario de Instagram',
         name: 'nombre completo'
       }
 
@@ -614,8 +655,7 @@ export class AutomationService {
 
       // Send WhatsApp template message
       const templateName = 'missing_data_request'
-      const missingFieldText = automation.missing_field_type === 'birthday' ? 'fecha de cumpleaños' :
-                              automation.missing_field_type === 'email' ? 'correo electrónico' : 'información de contacto'
+      const missingFieldText = fieldNames[automation.missing_field_type || ''] || 'información de contacto'
       
       const parameters = [
         customer.name || 'Cliente', // {{1}} nombre del cliente
@@ -682,6 +722,170 @@ export class AutomationService {
 
     } catch (error) {
       console.error('Error en prueba de automatización:', error)
+    }
+  }
+
+  // Función para otorgar puntos de cumpleaños
+  private async awardBirthdayPoints(customer: Customer, businessId: string, pointsToAward: number): Promise<void> {
+    try {
+      // Verificar si ya se otorgaron puntos de cumpleaños este año
+      const currentYear = new Date().getFullYear()
+      const { data: existingPoints, error: checkError } = await this.supabase
+        .from('point_loads')
+        .select('id')
+        .eq('customer_id', customer.id)
+        .eq('description', `Puntos de cumpleaños ${currentYear}`)
+        .single()
+
+      if (!checkError && existingPoints) {
+        console.log(`🎂 Puntos de cumpleaños ${currentYear} ya otorgados a ${customer.name}`)
+        return
+      }
+
+      // Obtener puntos actuales del cliente
+      const currentPoints = customer.points || 0
+      const newTotalPoints = currentPoints + pointsToAward
+
+      // Actualizar puntos del cliente
+      const { error: updateError } = await this.supabase
+        .from('customers')
+        .update({ 
+          points: newTotalPoints,
+          last_interaction: new Date().toISOString()
+        })
+        .eq('id', customer.id)
+
+      if (updateError) {
+        console.error('Error updating customer points:', updateError)
+        return
+      }
+
+      // Registrar la carga de puntos
+      const { error: pointLoadError } = await this.supabase
+        .from('point_loads')
+        .insert({
+          business_id: businessId,
+          customer_id: customer.id,
+          customer_phone: customer.phone,
+          amount_spent: 0,
+          points_awarded: pointsToAward,
+          loaded_by: null
+        })
+
+      if (pointLoadError) {
+        console.error('Error recording birthday points:', pointLoadError)
+        return
+      }
+
+      console.log(`🎉 Puntos de cumpleaños otorgados: ${pointsToAward} puntos a ${customer.name} (${currentPoints} → ${newTotalPoints})`)
+
+    } catch (error) {
+      console.error('Error awarding birthday points:', error)
+    }
+  }
+
+  // Business-specific automation methods
+  async processBirthdayAutomationsByBusiness(businessId: string): Promise<void> {
+    console.log(`🎂 Procesando automatizaciones de cumpleaños para business: ${businessId}`)
+
+    try {
+      const { data: automations, error: automationError } = await this.supabase
+        .from('automations')
+        .select('*')
+        .eq('automation_type', 'birthday')
+        .eq('is_active', true)
+        .eq('business_id', businessId)
+
+      if (automationError) {
+        console.error('Error loading birthday automations:', automationError)
+        return
+      }
+
+      if (!automations || automations.length === 0) {
+        console.log(`No hay automatizaciones de cumpleaños activas para business: ${businessId}`)
+        return
+      }
+
+      console.log(`Encontradas ${automations.length} automatizaciones de cumpleaños activas para business: ${businessId}`)
+
+      for (const automation of automations) {
+        await this.processSingleBirthdayAutomation(automation)
+      }
+
+    } catch (error) {
+      console.error(`Error procesando automatizaciones de cumpleaños para business ${businessId}:`, error)
+    }
+  }
+
+  async processInactiveCustomersAutomationsByBusiness(businessId: string): Promise<void> {
+    console.log(`💤 Procesando automatizaciones de clientes inactivos para business: ${businessId}`)
+
+    try {
+      const { data: automations, error: automationError } = await this.supabase
+        .from('automations')
+        .select('*')
+        .eq('automation_type', 'inactive_customers')
+        .eq('is_active', true)
+        .eq('business_id', businessId)
+
+      if (automationError || !automations || automations.length === 0) {
+        console.log(`No hay automatizaciones de clientes inactivos activas para business: ${businessId}`)
+        return
+      }
+
+      for (const automation of automations) {
+        await this.processSingleInactiveCustomersAutomation(automation)
+      }
+    } catch (error) {
+      console.error(`Error procesando automatizaciones de clientes inactivos para business ${businessId}:`, error)
+    }
+  }
+
+  async processPointsNotificationAutomationsByBusiness(businessId: string): Promise<void> {
+    console.log(`⭐ Procesando automatizaciones de notificación de puntos para business: ${businessId}`)
+
+    try {
+      const { data: automations, error } = await this.supabase
+        .from('automations')
+        .select('*')
+        .eq('automation_type', 'points_notification')
+        .eq('is_active', true)
+        .eq('business_id', businessId)
+
+      if (error || !automations || automations.length === 0) {
+        console.log(`No hay automatizaciones de notificación de puntos activas para business: ${businessId}`)
+        return
+      }
+
+      for (const automation of automations) {
+        await this.processSinglePointsNotificationAutomation(automation)
+      }
+    } catch (error) {
+      console.error(`Error procesando automatizaciones de puntos para business ${businessId}:`, error)
+    }
+  }
+
+  async processMissingFieldsAutomationsByBusiness(businessId: string): Promise<void> {
+    console.log(`📝 Procesando automatizaciones de campos faltantes para business: ${businessId}`)
+
+    try {
+      const { data: automations, error } = await this.supabase
+        .from('automations')
+        .select('*')
+        .eq('automation_type', 'missing_field')
+        .eq('is_active', true)
+        .eq('business_id', businessId)
+
+      if (error || !automations || automations.length === 0) {
+        console.log(`No hay automatizaciones de campos faltantes activas para business: ${businessId}`)
+        return
+      }
+
+      for (const automation of automations) {
+        await this.processSingleMissingFieldsAutomation(automation)
+      }
+    } catch (error) {
+      console.error(`Error procesando automatizaciones de campos faltantes para business ${businessId}:`, error)
     }
   }
 }

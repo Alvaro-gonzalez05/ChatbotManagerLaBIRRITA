@@ -1,20 +1,16 @@
 {
   "crons": [
     {
-      "path": "/api/cron/birthday-automations",
-      "schedule": "0 9 * * *"
+      "path": "/api/automation-events?event=birthdays",
+      "schedule": "0 8 * * *"
     },
     {
-      "path": "/api/cron/points-notifications", 
-      "schedule": "0 * * * *"
+      "path": "/api/automation-events?event=inactive",
+      "schedule": "0 20 * * 1"
     },
     {
-      "path": "/api/cron/inactive-customers",
-      "schedule": "0 10 * * 1"
-    },
-    {
-      "path": "/api/cron/missing-fields",
-      "schedule": "0 11 * * *"
+      "path": "/api/cron/vip-evaluation",
+      "schedule": "0 2 * * *"
     }
   ]
 }

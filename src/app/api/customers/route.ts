@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { AutomationEventSystem } from '@/services/automationEventSystem'
 
 const supabase = createClient(
   process.env.SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 )
+
+const eventSystem = new AutomationEventSystem()
 
 // Get customers
 export async function GET(request: NextRequest) {
@@ -41,6 +44,20 @@ export async function POST(request: NextRequest) {
       .select()
     
     if (error) throw error
+    
+    // 🚀 EVENT-DRIVEN: Disparar evento de cliente registrado
+    if (data && data[0]) {
+      console.log(`🚀 EVENT: Cliente registrado - ${data[0].name} (${data[0].business_id})`)
+      
+      // Disparar evento async para no bloquear la respuesta
+      setImmediate(async () => {
+        try {
+          await eventSystem.onCustomerRegistered(data[0])
+        } catch (eventError) {
+          console.error('Error procesando evento de cliente registrado:', eventError)
+        }
+      })
+    }
     
     return NextResponse.json(data, { status: 201 })
   } catch (error: any) {

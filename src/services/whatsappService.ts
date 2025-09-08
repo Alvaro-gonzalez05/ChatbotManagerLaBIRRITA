@@ -79,9 +79,16 @@ export class WhatsAppService {
   // Enviar mensaje de texto
   async sendTextMessage(phoneNumberId: string, to: string, message: string): Promise<any> {
     try {
+      // Normalizar número argentino para Meta (quitar el 9 si está presente)
+      let normalizedTo = to
+      if (to.startsWith('549')) {
+        normalizedTo = to.replace('549', '54')
+        console.log(`📱 Normalizando número: ${to} → ${normalizedTo}`)
+      }
+
       const response = await this.client.post(`/${phoneNumberId}/messages`, {
         messaging_product: 'whatsapp',
-        to: to,
+        to: normalizedTo,
         type: 'text',
         text: {
           body: message
@@ -90,7 +97,12 @@ export class WhatsAppService {
 
       return response.data
     } catch (error: any) {
-      console.error('Error sending WhatsApp message:', error.response?.data || error.message)
+      console.error('Error sending WhatsApp message:')
+      console.error('- Status:', error.response?.status)
+      console.error('- Status Text:', error.response?.statusText)
+      console.error('- Data:', error.response?.data)
+      console.error('- Message:', error.message)
+      console.error('- Full error:', error)
       throw new Error('Failed to send WhatsApp message')
     }
   }
@@ -220,6 +232,38 @@ export class WhatsAppService {
       return message.text.body
     }
     return ''
+  }
+
+  // Verificar si el mensaje es una imagen
+  isImageMessage(message: WhatsAppMessage): boolean {
+    return message.type === 'image' && !!message.image
+  }
+
+  // Descargar imagen de WhatsApp
+  async downloadImage(mediaId: string): Promise<Buffer | null> {
+    try {
+      // Primero obtener la URL del archivo
+      const mediaResponse = await this.client.get(`/${mediaId}`, {
+        headers: {
+          'Authorization': `Bearer ${this.accessToken}`
+        }
+      })
+
+      const mediaUrl = mediaResponse.data.url
+      
+      // Descargar el archivo
+      const imageResponse = await this.client.get(mediaUrl, {
+        headers: {
+          'Authorization': `Bearer ${this.accessToken}`
+        },
+        responseType: 'arraybuffer'
+      })
+
+      return Buffer.from(imageResponse.data)
+    } catch (error) {
+      console.error('Error downloading image:', error)
+      return null
+    }
   }
 
   // Verificar si el mensaje es de un cliente

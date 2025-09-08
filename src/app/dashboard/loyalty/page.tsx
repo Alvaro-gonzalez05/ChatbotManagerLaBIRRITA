@@ -71,6 +71,12 @@ interface LoyaltySettings {
   points_expiry_days: number
   expiry_notification_days: number
   vip_levels: VipLevel[]
+  vip_criteria?: {
+    monthly_visits: number
+    monthly_spending: number
+    total_visits: number
+    total_spending: number
+  }
 }
 
 interface RedeemableItem {
@@ -129,6 +135,7 @@ function LoyaltyPageContent() {
   const [redeemableItems, setRedeemableItems] = useState<RedeemableItem[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [executingAutomations, setExecutingAutomations] = useState<string[]>([])
   
   // Automation form states
   const [showAutomationForm, setShowAutomationForm] = useState(false)
@@ -166,6 +173,14 @@ function LoyaltyPageContent() {
     bonus_points: 0 
   })
 
+  // VIP Criteria states
+  const [vipCriteria, setVipCriteria] = useState({
+    monthly_visits: 5,
+    monthly_spending: 25000,
+    total_visits: 10,
+    total_spending: 50000
+  })
+
   const supabase = createClient()
 
   useEffect(() => {
@@ -192,6 +207,10 @@ function LoyaltyPageContent() {
       
       if (data) {
         setLoyaltySettings(data)
+        // Actualizar criterios VIP si existen en la base de datos
+        if (data.vip_criteria) {
+          setVipCriteria(data.vip_criteria)
+        }
       } else {
         // Create default settings if none exist
         const defaultSettings: LoyaltySettings = {
@@ -212,7 +231,13 @@ function LoyaltyPageContent() {
             { name: 'Bronce', min_points: 500, benefits: ['5% descuento en consumo'], color: '#CD7F32' },
             { name: 'Plata', min_points: 1500, benefits: ['10% descuento', 'Prioridad en reservas'], color: '#C0C0C0' },
             { name: 'Oro', min_points: 3000, benefits: ['15% descuento', 'Bebida gratis', 'Mesa VIP'], color: '#FFD700' }
-          ]
+          ],
+          vip_criteria: {
+            monthly_visits: 5,
+            monthly_spending: 25000,
+            total_visits: 10,
+            total_spending: 50000
+          }
         }
         setLoyaltySettings(defaultSettings)
       }
@@ -338,6 +363,185 @@ function LoyaltyPageContent() {
       loadAutomations()
     } catch (error: any) {
       toast.error('Error al actualizar automatización: ' + error.message)
+    }
+  }
+
+  const executeAutomationsManually = async () => {
+    if (!business?.id) {
+      toast.error('No se puede ejecutar automatizaciones sin negocio seleccionado')
+      return
+    }
+
+    setExecutingAutomations(['all'])
+    try {
+      const response = await fetch(`/api/automations/${business.id}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.error || 'Error al ejecutar automatizaciones')
+      }
+
+      const result = await response.json()
+      toast.success(`✅ Automatizaciones ejecutadas: ${result.summary || 'Proceso completado'}`)
+      
+    } catch (error: any) {
+      console.error('Error ejecutando automatizaciones:', error)
+      toast.error('Error al ejecutar automatizaciones: ' + error.message)
+    } finally {
+      setExecutingAutomations([])
+    }
+  }
+
+  const executeSpecificAutomation = async (automationType: string, automationId: string) => {
+    if (!business?.id) {
+      toast.error('No se puede ejecutar automatización sin negocio seleccionado')
+      return
+    }
+
+    setExecutingAutomations([automationId])
+    try {
+      const response = await fetch(`/api/automations/${business.id}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          automationId: automationId
+        })
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.error || 'Error al ejecutar automatización')
+      }
+
+      const result = await response.json()
+      toast.success(`✅ Automatización ejecutada: ${result.summary || 'Proceso completado'}`)
+      
+    } catch (error: any) {
+      console.error('Error ejecutando automatización:', error)
+      toast.error('Error al ejecutar automatización: ' + error.message)
+    } finally {
+      setExecutingAutomations([])
+    }
+  }
+
+  const updateDynamicVipStatus = async () => {
+    if (!business?.id) {
+      toast.error('No se puede actualizar VIP sin negocio seleccionado')
+      return
+    }
+
+    setExecutingAutomations(['vip-update'])
+    try {
+      // Obtener todos los clientes
+      const { data: allCustomers, error: customerError } = await supabase
+        .from('customers')
+        .select('*')
+        .eq('business_id', business.id)
+
+      if (customerError) throw customerError
+
+      let vipUpdated = 0
+      const now = new Date()
+      const oneMonthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
+
+      for (const customer of allCustomers || []) {
+        const lastInteraction = new Date(customer.last_interaction)
+        const isRecentlyActive = lastInteraction >= oneMonthAgo
+
+        // Calcular actividad mensual (aproximada basada en actividad reciente)
+        const monthlyVisits = isRecentlyActive ? customer.visit_count : 0
+        const monthlySpending = isRecentlyActive ? customer.total_spent * 0.3 : 0 // Estimar 30% del gasto en el último mes
+        
+        // Criterios configurables para VIP automático
+        const meetsMonthlyVisits = monthlyVisits >= vipCriteria.monthly_visits
+        const meetsMonthlySpending = monthlySpending >= vipCriteria.monthly_spending
+        const meetsTotalVisits = customer.visit_count >= vipCriteria.total_visits
+        const meetsTotalSpending = customer.total_spent >= vipCriteria.total_spending
+
+        const isVipEligible = (
+          meetsMonthlyVisits || 
+          meetsMonthlySpending || 
+          meetsTotalVisits || 
+          meetsTotalSpending
+        )
+
+        if (isVipEligible) {
+          // Verificar si ya tiene etiqueta VIP
+          const currentTags = customer.tags || []
+          if (!currentTags.includes('VIP')) {
+            const updatedTags = [...currentTags, 'VIP']
+            
+            let promotionReason = []
+            if (meetsMonthlyVisits) promotionReason.push(`${monthlyVisits} visitas mensuales`)
+            if (meetsMonthlySpending) promotionReason.push(`$${monthlySpending.toLocaleString()} gasto mensual`)
+            if (meetsTotalVisits) promotionReason.push(`${customer.visit_count} visitas totales`)
+            if (meetsTotalSpending) promotionReason.push(`$${customer.total_spent.toLocaleString()} gasto total`)
+            
+            const { error: updateError } = await supabase
+              .from('customers')
+              .update({ 
+                tags: updatedTags,
+                notes: customer.notes ? 
+                  `${customer.notes}\n[AUTO-VIP] Promocionado por: ${promotionReason.join(', ')} - ${now.toLocaleDateString()}` :
+                  `[AUTO-VIP] Promocionado por: ${promotionReason.join(', ')} - ${now.toLocaleDateString()}`
+              })
+              .eq('id', customer.id)
+
+            if (!updateError) {
+              vipUpdated++
+            }
+          }
+        }
+      }
+
+      toast.success(`✅ Sistema VIP actualizado: ${vipUpdated} clientes promocionados a VIP`)
+      
+    } catch (error: any) {
+      console.error('Error actualizando VIP dinámico:', error)
+      toast.error('Error al actualizar sistema VIP: ' + error.message)
+    } finally {
+      setExecutingAutomations([])
+    }
+  }
+
+  const saveVipCriteria = async () => {
+    if (!business?.id || !loyaltySettings) {
+      toast.error('No se pueden guardar criterios sin configuración cargada')
+      return
+    }
+
+    setSaving(true)
+    try {
+      // Actualizar tanto loyaltySettings como la base de datos
+      const updatedSettings = {
+        ...loyaltySettings,
+        vip_criteria: vipCriteria
+      }
+
+      const { error } = await supabase
+        .from('loyalty_settings')
+        .upsert({
+          business_id: business.id,
+          ...updatedSettings
+        })
+
+      if (error) throw error
+
+      setLoyaltySettings(updatedSettings)
+      toast.success('✅ Criterios VIP guardados correctamente en la base de datos')
+      
+    } catch (error: any) {
+      console.error('Error guardando criterios VIP:', error)
+      toast.error('Error al guardar criterios VIP: ' + error.message)
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -1135,134 +1339,117 @@ function LoyaltyPageContent() {
           <TabsContent value="vip" className="space-y-6">
             <Card className="animate-slide-up">
               <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Star className="h-5 w-5 text-primary" />
-                  Niveles VIP
-                </CardTitle>
-                <CardDescription>
-                  Configure niveles VIP y sus beneficios exclusivos
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-6">
-                {/* Add VIP level form */}
-                <div className="p-4 border rounded-lg space-y-4">
-                  <h3 className="font-semibold">Agregar Nuevo Nivel VIP</h3>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div className="space-y-2">
-                      <Label>Nombre del Nivel</Label>
-                      <Input
-                        value={newVipLevel.name}
-                        onChange={(e) => setNewVipLevel({...newVipLevel, name: e.target.value})}
-                        placeholder="Platino"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Puntos Mínimos</Label>
-                      <Input
-                        type="number"
-                        value={newVipLevel.min_points || ''}
-                        onChange={(e) => setNewVipLevel({...newVipLevel, min_points: parseInt(e.target.value) || 0})}
-                        placeholder="5000"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Color (opcional)</Label>
-                      <Input
-                        type="color"
-                        value={newVipLevel.color || '#FFD700'}
-                        onChange={(e) => setNewVipLevel({...newVipLevel, color: e.target.value})}
-                      />
-                    </div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="flex items-center gap-2">
+                      <Star className="h-5 w-5 text-primary" />
+                      Niveles VIP
+                    </CardTitle>
+                    <CardDescription>
+                      Configure niveles VIP y sus beneficios exclusivos
+                    </CardDescription>
                   </div>
-                  
-                  <div className="space-y-2">
-                    <Label>Beneficios</Label>
-                    {newVipLevel.benefits.map((benefit, index) => (
-                      <div key={index} className="flex gap-2">
-                        <Input
-                          value={benefit}
-                          onChange={(e) => {
-                            const updatedBenefits = [...newVipLevel.benefits]
-                            updatedBenefits[index] = e.target.value
-                            setNewVipLevel({...newVipLevel, benefits: updatedBenefits})
-                          }}
-                          placeholder="Describe el beneficio..."
-                        />
-                        {newVipLevel.benefits.length > 1 && (
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            onClick={() => {
-                              const updatedBenefits = newVipLevel.benefits.filter((_, i) => i !== index)
-                              setNewVipLevel({...newVipLevel, benefits: updatedBenefits})
-                            }}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        )}
-                      </div>
-                    ))}
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setNewVipLevel({...newVipLevel, benefits: [...newVipLevel.benefits, '']})}
-                    >
-                      <Plus className="mr-2 h-4 w-4" />
-                      Agregar Beneficio
-                    </Button>
-                  </div>
-                  
-                  <Button onClick={addVipLevel}>
-                    <Plus className="mr-2 h-4 w-4" />
-                    Crear Nivel VIP
+                  <Button
+                    onClick={updateDynamicVipStatus}
+                    disabled={executingAutomations.includes('vip-update')}
+                    variant="outline"
+                    className="gap-2"
+                  >
+                    <Star className={`h-4 w-4 ${executingAutomations.includes('vip-update') ? 'animate-pulse' : ''}`} />
+                    {executingAutomations.includes('vip-update') ? 'Actualizando...' : 'Actualizar VIP Dinámico'}
                   </Button>
                 </div>
-
-                {/* Existing VIP levels */}
-                <div className="space-y-4">
-                  <h3 className="font-semibold">Niveles Configurados</h3>
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {loyaltySettings.vip_levels.map((level, index) => (
-                      <Card key={index} className="animate-scale-hover">
-                        <CardHeader className="pb-2">
-                          <div className="flex items-center justify-between">
-                            <CardTitle className="text-lg flex items-center gap-2">
-                              <div 
-                                className="w-4 h-4 rounded-full"
-                                style={{ backgroundColor: level.color || '#FFD700' }}
-                              />
-                              {level.name}
-                            </CardTitle>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => removeVipLevel(index)}
-                              className="text-destructive hover:text-destructive"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </div>
-                          <Badge variant="secondary">{level.min_points.toLocaleString()} puntos mínimos</Badge>
-                        </CardHeader>
-                        <CardContent>
-                          <div className="space-y-2">
-                            <Label className="text-sm font-medium">Beneficios:</Label>
-                            <ul className="text-sm space-y-1">
-                              {level.benefits.map((benefit, bIndex) => (
-                                <li key={bIndex} className="flex items-start gap-2">
-                                  <Star className="h-3 w-3 text-primary mt-0.5 flex-shrink-0" />
-                                  {benefit}
-                                </li>
-                              ))}
-                            </ul>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    ))}
+              </CardHeader>
+              <CardContent className="space-y-6">
+                {/* Información del sistema VIP dinámico */}
+                <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
+                  <h4 className="font-medium text-blue-900 mb-2">🤖 Sistema VIP Automático</h4>
+                  <p className="text-sm text-blue-800 mb-3">
+                    Los clientes se promocionan automáticamente a VIP cuando cumplen alguno de estos criterios:
+                  </p>
+                  <ul className="text-sm text-blue-700 space-y-1">
+                    <li>• <strong>{vipCriteria.monthly_visits}+ visitas</strong> en el último mes</li>
+                    <li>• <strong>${vipCriteria.monthly_spending.toLocaleString()}+</strong> gastados en el último mes</li>
+                    <li>• <strong>{vipCriteria.total_visits}+ visitas</strong> en total</li>
+                    <li>• <strong>${vipCriteria.total_spending.toLocaleString()}+</strong> gastados en total</li>
+                  </ul>
+                  <div className="mt-3 p-2 bg-green-50 border border-green-200 rounded">
+                    <p className="text-xs text-green-700">
+                      🕒 <strong>Ejecución Automática:</strong> El sistema evalúa y promociona clientes VIP automáticamente cada día a las 2:00 AM
+                    </p>
+                  </div>
+                  <p className="text-xs text-blue-600 mt-2">
+                    ℹ️ También puedes ejecutar "Actualizar VIP Dinámico" manualmente en cualquier momento
+                  </p>
+                </div>
+                {/* Formulario de configuración VIP */}
+                <div className="p-4 border rounded-lg space-y-4">
+                  <h3 className="font-semibold">Configurar Criterios VIP Automático</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label>Visitas Mensuales para VIP</Label>
+                      <Input
+                        type="number"
+                        value={vipCriteria.monthly_visits}
+                        onChange={(e) => setVipCriteria({...vipCriteria, monthly_visits: parseInt(e.target.value) || 0})}
+                        placeholder="5"
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Número mínimo de visitas en el último mes
+                      </p>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Gasto Mensual para VIP ($)</Label>
+                      <Input
+                        type="number"
+                        value={vipCriteria.monthly_spending}
+                        onChange={(e) => setVipCriteria({...vipCriteria, monthly_spending: parseInt(e.target.value) || 0})}
+                        placeholder="25000"
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Monto mínimo gastado en el último mes
+                      </p>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Visitas Totales para VIP</Label>
+                      <Input
+                        type="number"
+                        value={vipCriteria.total_visits}
+                        onChange={(e) => setVipCriteria({...vipCriteria, total_visits: parseInt(e.target.value) || 0})}
+                        placeholder="10"
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Número total de visitas históricas
+                      </p>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Gasto Total para VIP ($)</Label>
+                      <Input
+                        type="number"
+                        value={vipCriteria.total_spending}
+                        onChange={(e) => setVipCriteria({...vipCriteria, total_spending: parseInt(e.target.value) || 0})}
+                        placeholder="50000"
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Monto total gastado históricamente
+                      </p>
+                    </div>
+                  </div>
+                  
+                  <div className="flex justify-between items-center pt-4">
+                    <p className="text-sm text-muted-foreground">
+                      Los clientes que cumplan <strong>cualquiera</strong> de estos criterios serán promocionados automáticamente a VIP
+                    </p>
+                    <Button 
+                      onClick={saveVipCriteria} 
+                      disabled={saving}
+                      variant="outline"
+                    >
+                      {saving ? 'Guardando...' : 'Guardar Criterios'}
+                    </Button>
                   </div>
                 </div>
+
               </CardContent>
             </Card>
           </TabsContent>
@@ -1336,6 +1523,16 @@ function LoyaltyPageContent() {
                                     <Badge variant={automation.is_active ? "default" : "secondary"} className="text-xs">
                                       {automation.is_active ? "Activa" : "Inactiva"}
                                     </Badge>
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      onClick={() => executeSpecificAutomation(automation.automation_type, automation.id)}
+                                      disabled={executingAutomations.includes(automation.id)}
+                                      className="h-7 text-xs gap-1"
+                                    >
+                                      <Zap className={`h-3 w-3 ${executingAutomations.includes(automation.id) ? 'animate-pulse' : ''}`} />
+                                      {executingAutomations.includes(automation.id) ? 'Ejecutando...' : 'Probar'}
+                                    </Button>
                                     <Switch
                                       checked={automation.is_active}
                                       onCheckedChange={() => toggleAutomation(automation.id, automation.is_active)}
@@ -1348,18 +1545,30 @@ function LoyaltyPageContent() {
                                   <div className="mt-3 pt-3 border-t">
                                     <div className="flex items-center justify-between mb-2">
                                       <Label className="text-xs font-medium">Promoción Asociada</Label>
-                                      <Button
-                                        variant="outline"
-                                        size="sm"
-                                        onClick={() => {
-                                          setEditingAutomation(automation)
-                                          setShowAutomationForm(true)
-                                        }}
-                                        className="h-7 text-xs"
-                                      >
-                                        <Edit className="h-3 w-3 mr-1" />
-                                        Configurar
-                                      </Button>
+                                      <div className="flex items-center gap-2">
+                                        <Button
+                                          variant="outline"
+                                          size="sm"
+                                          onClick={() => executeSpecificAutomation(automation.automation_type, automation.id)}
+                                          disabled={executingAutomations.includes(automation.id)}
+                                          className="h-7 text-xs gap-1"
+                                        >
+                                          <Zap className={`h-3 w-3 ${executingAutomations.includes(automation.id) ? 'animate-pulse' : ''}`} />
+                                          {executingAutomations.includes(automation.id) ? 'Ejecutando...' : 'Probar'}
+                                        </Button>
+                                        <Button
+                                          variant="outline"
+                                          size="sm"
+                                          onClick={() => {
+                                            setEditingAutomation(automation)
+                                            setShowAutomationForm(true)
+                                          }}
+                                          className="h-7 text-xs"
+                                        >
+                                          <Edit className="h-3 w-3 mr-1" />
+                                          Configurar
+                                        </Button>
+                                      </div>
                                     </div>
                                     {automation.promotion_id ? (
                                       <div className="p-2 bg-blue-50 rounded-md">

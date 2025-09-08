@@ -25,6 +25,9 @@ export interface CustomerData {
   birthday?: string
   status?: string
   created_at?: string
+  points?: number
+  visit_count?: number
+  total_spent?: number
 }
 
 export interface BusinessConfig {
@@ -37,7 +40,12 @@ export interface BusinessConfig {
     tone: string
     personality_description: string
     welcome_message: string
-    capabilities: string[]
+          // Verificar si ya se otorgaron puntos de bienvenida (revisar si ya tiene point_loads)
+      const { data: existingPointLoads, error: checkPointsError } = await supabase
+        .from('point_loads')
+        .select('id')
+        .eq('customer_id', customerId)
+        .eq('loaded_by', 'system-welcome')lities: string[]
   }
 }
 
@@ -265,15 +273,16 @@ Responde de manera natural, útil y según tu personalidad configurada.`
 
   private async getOrCreateCustomer(phoneNumber: string, businessId: string): Promise<CustomerData> {
     try {
-      // Try to find existing customer by phone
+      // Try to find existing customer by phone (check both phone fields and business_id)
       let { data: customer, error } = await supabase
         .from('customers')
         .select('*')
         .eq('phone', phoneNumber)
+        .eq('business_id', businessId)
         .single()
 
       if (!error && customer) {
-        console.log('Found existing customer:', customer)
+        console.log('Found existing customer by phone field:', customer)
         return customer
       }
 
@@ -282,22 +291,24 @@ Responde de manera natural, útil y según tu personalidad configurada.`
         .from('customers')
         .select('*')
         .eq('phone_number', phoneNumber)
+        .eq('business_id', businessId)
         .single())
 
       if (!error && customer) {
-        console.log('Found existing customer (alternative field):', customer)
+        console.log('Found existing customer by phone_number field:', customer)
         return customer
       }
 
-      // Create new customer placeholder (will be updated when we get name)
-      console.log('Creating new customer placeholder for phone:', phoneNumber, 'business:', businessId)
+      // **IMPORTANTE**: Si no existe, crear nuevo cliente
+      console.log('No existing customer found. Creating new customer for phone:', phoneNumber, 'business:', businessId)
       const { data: newCustomer, error: createError } = await supabase
         .from('customers')
         .insert([{ 
           phone: phoneNumber,
           business_id: businessId,
           status: 'pending_verification', // Mark as pending until we get name
-          name: null // Explicitly null until verified
+          name: null, // Will be updated when we extract name from messages
+          points: 0
         }])
         .select()
         .single()
@@ -311,7 +322,8 @@ Responde de manera natural, útil y según tu personalidad configurada.`
             phone_number: phoneNumber,
             business_id: businessId,
             status: 'pending_verification',
-            name: null
+            name: null,
+            points: 0
           }])
           .select()
           .single()
@@ -323,7 +335,7 @@ Responde de manera natural, útil y según tu personalidad configurada.`
       return newCustomer
     } catch (error) {
       console.error('Error managing customer:', error)
-      return { phone_number: phoneNumber, phone: phoneNumber, status: 'pending_verification' }
+      return { phone_number: phoneNumber, phone: phoneNumber, status: 'pending_verification', points: 0 }
     }
   }
 
@@ -349,6 +361,9 @@ Responde de manera natural, útil y según tu personalidad configurada.`
             status: 'active' // Activate customer once we have name
           })
           console.log('Extracted name:', nameMatch)
+          
+          // Otorgar puntos de bienvenida cuando se activa el cliente
+          await this.awardWelcomePoints(customer.id!, businessId)
         }
       }
 
@@ -887,6 +902,84 @@ Responde de manera natural, útil y según tu personalidad configurada.`
     } catch (error) {
       console.error('Error processing points query:', error)
       return null
+    }
+  }
+
+  // Función para otorgar puntos de bienvenida
+  private async awardWelcomePoints(customerId: string, businessId: string): Promise<void> {
+    try {
+      // Obtener configuración de loyalty
+      const loyaltySettings = await this.getLoyaltySettings(businessId)
+      
+      if (!loyaltySettings || !loyaltySettings.welcome_points || loyaltySettings.welcome_points <= 0) {
+        console.log('No welcome points configured or zero points')
+        return
+      }
+
+      // Verificar si ya se otorgaron puntos de bienvenida (revisar si ya tiene point_loads)
+      const { data: existingPoints, error: checkError } = await supabase
+        .from('point_loads')
+        .select('id')
+        .eq('customer_id', customerId)
+        .eq('amount_spent', 0)
+        .gte('points_awarded', 50) // Puntos que indican bienvenida
+        .single()
+
+      if (!checkError && existingPoints) {
+        console.log('Welcome points already awarded to customer:', customerId)
+        return
+      }
+
+      const welcomePoints = loyaltySettings.welcome_points
+
+      // Obtener customer actual para sumar puntos y obtener teléfono
+      const { data: customer, error: customerError } = await supabase
+        .from('customers')
+        .select('points, phone, phone_number')
+        .eq('id', customerId)
+        .single()
+
+      if (customerError) {
+        console.error('Error getting customer for welcome points:', customerError)
+        return
+      }
+
+      const currentPoints = customer.points || 0
+      const newTotalPoints = currentPoints + welcomePoints
+      const customerPhone = customer.phone || customer.phone_number || ''
+
+      // Actualizar puntos del cliente
+      const { error: updateError } = await supabase
+        .from('customers')
+        .update({ points: newTotalPoints })
+        .eq('id', customerId)
+
+      if (updateError) {
+        console.error('Error updating customer points:', updateError)
+        return
+      }
+
+      // Registrar la carga de puntos
+      const { error: pointLoadError } = await supabase
+        .from('point_loads')
+        .insert({
+          business_id: businessId,
+          customer_id: customerId,
+          customer_phone: customerPhone,
+          amount_spent: 0,
+          points_awarded: welcomePoints,
+          loaded_by: null
+        })
+
+      if (pointLoadError) {
+        console.error('Error recording point load:', pointLoadError)
+        return
+      }
+
+      console.log(`✅ Welcome points awarded: ${welcomePoints} points to customer ${customerId}`)
+
+    } catch (error) {
+      console.error('Error awarding welcome points:', error)
     }
   }
 }

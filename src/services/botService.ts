@@ -1,8 +1,10 @@
 import { createClient } from '@supabase/supabase-js'
+import { MercadoPagoService } from './mercadoPagoService'
 
 const supabaseUrl = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)!.replace(/['"]/g, '')
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY!.replace(/['"]/g, '')
 const supabase = createClient(supabaseUrl, supabaseKey)
+const mercadoPagoService = new MercadoPagoService()
 
 export interface BotPersonality {
   id: string
@@ -25,6 +27,9 @@ export interface BusinessInfo {
   address?: string
   phone?: string
   email?: string
+  instagram_url?: string
+  location_url?: string
+  transfer_alias?: string
   working_hours?: any
   categories?: string[]
   specialties?: string[]
@@ -50,7 +55,7 @@ export class BotService {
     // No need for external dependencies
   }
 
-  async processMessage(messageText: string, customerNumber: string, businessId: string, customerName?: string): Promise<string> {
+  async processMessage(messageText: string, customerNumber: string, businessId: string, customerName?: string, transferNumber?: string | null): Promise<string> {
     try {
       // Get bot personality and business info
       const [botPersonality, businessInfo] = await Promise.all([
@@ -114,7 +119,8 @@ export class BotService {
       }
 
       // Generate response based on message and context
-      const response = await this.generateResponse(messageText, botPersonality, businessInfo, customerNumber, customerName, context)
+      console.log(`🤖 DEBUG: About to call generateResponse with transferNumber:`, transferNumber)
+      const response = await this.generateResponse(messageText, botPersonality, businessInfo, customerNumber, customerName, context || undefined, transferNumber)
       
       // Update conversation context based on the interaction
       await this.updateConversationContext(customerNumber, businessId, messageText, customerName, context)
@@ -189,7 +195,7 @@ export class BotService {
     return (hours || 0) * 60 + (minutes || 0)
   }
 
-  private async generateResponse(input: string, personality: BotPersonality, business: BusinessInfo, customerNumber: string, customerName?: string, context?: ConversationContext): Promise<string> {
+  private async generateResponse(input: string, personality: BotPersonality, business: BusinessInfo, customerNumber: string, customerName?: string, context?: ConversationContext, transferNumber?: string | null): Promise<string> {
     const lowerInput = input.toLowerCase()
 
     // Extract name from message if mentioned
@@ -204,6 +210,27 @@ export class BotService {
     // Check if already greeted in this conversation
     const alreadyGreeted = context?.context_data?.greeted || false
 
+    // *** PRIORITY CHECK: Transfer receipt detection (both text and transfer number) - MUST BE FIRST ***
+    const hasTransferReceipt = this.isTransferReceipt(input, lowerInput) || (transferNumber !== null && transferNumber !== undefined)
+    
+    // DEBUG: Detailed logging
+    console.log(`🔍 TRANSFER RECEIPT DEBUG:`)
+    console.log(`   - Input: "${input}"`)
+    console.log(`   - Lower: "${lowerInput}"`)
+    console.log(`   - isTransferReceipt result: ${this.isTransferReceipt(input, lowerInput)}`)
+    console.log(`   - transferNumber received:`, transferNumber)
+    console.log(`   - hasTransferNumber: ${transferNumber !== null && transferNumber !== undefined}`)
+    console.log(`   - hasTransferReceipt final: ${hasTransferReceipt}`)
+    console.log(`   - Context exists: ${!!context}`)
+    console.log(`   - Context reservation_day: ${context?.reservation_day}`)
+    console.log(`   - Context reservation_people: ${context?.reservation_people}`)
+
+    // Transfer receipt processing (HIGHEST PRIORITY)
+    if (hasTransferReceipt) {
+      console.log(`🔍 Processing transfer receipt with extracted name: ${extractedName}`)
+      return await this.processTransferReceipt(input, business, customerNumber, extractedName, context, transferNumber)
+    }
+
     // Use AI to detect intent and generate natural response
     const aiResponse = await this.generateAIResponse(input, personality, business, extractedName, alreadyGreeted, context)
     if (aiResponse) {
@@ -212,7 +239,19 @@ export class BotService {
 
     // Check for multiple intents in the same message (prioritize specific requests)
     const hasGreeting = lowerInput.includes('hola') || lowerInput.includes('buenas') || lowerInput.includes('buenos días') || lowerInput.includes('buenas tardes')
-    const hasHoursRequest = lowerInput.includes('horario') || lowerInput.includes('hora') || lowerInput.includes('abierto') || lowerInput.includes('cerrado')
+    
+    // Enhanced reservation detection with multiple patterns FIRST
+    const hasReservationKeywords = lowerInput.includes('reserva') || lowerInput.includes('mesa') || lowerInput.includes('booking')
+    const hasReservationVerbs = lowerInput.includes('reservar') || lowerInput.includes('reservemos') || lowerInput.includes('reservo')
+    const hasReservationIntent = (lowerInput.includes('quisiera') || lowerInput.includes('quiero') || lowerInput.includes('queremos') || lowerInput.includes('me gustaria')) && 
+                               (hasReservationKeywords || hasReservationVerbs)
+    const hasPositiveReservationResponse = (lowerInput.includes('dale') || lowerInput.includes('genial') || lowerInput.includes('perfecto') || lowerInput.includes('barbaro') || lowerInput.includes('bárbaro') || lowerInput.includes('si') || lowerInput.includes('sí')) &&
+                                         (hasReservationKeywords || hasReservationVerbs || lowerInput.includes('reservemos') || lowerInput.includes('reserva'))
+    const hasReservation = hasReservationKeywords || hasReservationVerbs || hasReservationIntent || hasPositiveReservationResponse
+    
+    // Hours request (but NOT if it's clearly a reservation with time)
+    const hasHoursRequest = (lowerInput.includes('horario') || lowerInput.includes('abierto') || lowerInput.includes('cerrado') ||
+                            (lowerInput.includes('hora') && !hasReservation)) // Only detect "hora" if it's not a reservation
     const hasLocationRequest = lowerInput.includes('ubicacion') || lowerInput.includes('direccion') || lowerInput.includes('donde') || lowerInput.includes('como llegar')
     const hasContactRequest = lowerInput.includes('contacto') || lowerInput.includes('telefono') || lowerInput.includes('llamar')
     const hasMenuRequest = lowerInput.includes('menu') || lowerInput.includes('comida') || lowerInput.includes('carta') || lowerInput.includes('platos')
@@ -222,23 +261,14 @@ export class BotService {
                            (lowerInput.includes('cuanto') && !lowerInput.includes('puntos'))) &&
                            !hasLoyaltyRequest
     
-    // Enhanced reservation detection with multiple patterns
-    const hasReservationKeywords = lowerInput.includes('reserva') || lowerInput.includes('mesa') || lowerInput.includes('booking')
-    const hasReservationVerbs = lowerInput.includes('reservar') || lowerInput.includes('reservemos') || lowerInput.includes('reservo')
-    const hasReservationIntent = (lowerInput.includes('quisiera') || lowerInput.includes('quiero') || lowerInput.includes('queremos') || lowerInput.includes('me gustaria')) && 
-                               (hasReservationKeywords || hasReservationVerbs)
-    const hasPositiveReservationResponse = (lowerInput.includes('dale') || lowerInput.includes('genial') || lowerInput.includes('perfecto') || lowerInput.includes('barbaro') || lowerInput.includes('bárbaro') || lowerInput.includes('si') || lowerInput.includes('sí')) &&
-                                         (hasReservationKeywords || hasReservationVerbs || lowerInput.includes('reservemos') || lowerInput.includes('reserva'))
-    const hasReservation = hasReservationKeywords || hasReservationVerbs || hasReservationIntent || hasPositiveReservationResponse
-    
-    console.log(`🔍 DEBUG: lowerInput="${lowerInput}", hasLoyaltyRequest=${hasLoyaltyRequest}, hasReservation=${hasReservation}`)
+    console.log(`🔍 DEBUG: lowerInput="${lowerInput}", hasLoyaltyRequest=${hasLoyaltyRequest}, hasReservation=${hasReservation}, hasTransferReceipt=${hasTransferReceipt}, hasTransferNumber=${transferNumber !== null}`)
     const hasReservationDetails = this.isReservationDetails(lowerInput)
 
     // Check if already greeted in this conversation (avoid repeated greetings)
     // alreadyGreeted already declared above
 
     // PRIORITY ORDER: Specific requests take priority over greetings
-    
+
     // Hours request (highest priority for information requests)
     if (hasHoursRequest) {
       const greetingPrefix = hasGreeting && !alreadyGreeted && extractedName ? `¡Hola ${extractedName}! ` : 
@@ -515,6 +545,26 @@ Pero tranqui, te puedo ayudar con:
     let people = context?.reservation_people?.toString() || ''
     let type = context?.reservation_type || ''
     let name = context?.customer_name || customerName || ''
+    
+    // If we have a valid customer name from WhatsApp profile and it's not a generic name, use it
+    if (customerName && customerName !== 'Cliente' && customerName !== 'TestUser' && customerName.trim() !== '') {
+      name = customerName
+    }
+    
+    // DEBUG: Log name variables
+    console.log(`🔍 NAME DEBUG:`)
+    console.log(`   - context?.customer_name: "${context?.customer_name}"`)
+    console.log(`   - customerName parameter: "${customerName}"`)
+    console.log(`   - final name variable: "${name}"`)
+    console.log(`   - name check result: ${!name || name === 'Cliente' || name === 'TestUser' || name.trim() === ''}`)
+    
+    // DEBUG: Log name resolution
+    console.log(`🔍 NAME DEBUG:`)
+    console.log(`   - context?.customer_name: "${context?.customer_name}"`)
+    console.log(`   - customerName: "${customerName}"`)
+    console.log(`   - final name: "${name}"`)
+    console.log(`   - name validation: !name=${!name}, name === 'Cliente'=${name === 'Cliente'}, name === 'TestUser'=${name === 'TestUser'}, name.trim() === ''=${name.trim() === ''}`)
+    
 
     const lowerInput = input.toLowerCase()
     
@@ -591,8 +641,8 @@ Pero tranqui, te puedo ayudar con:
     if (day && type) {
       // Has day and type, check if we need people count
       if (people) {
-        // Check if we have the customer's name
-        if (!name || name === 'Cliente') {
+        // Check if we have a valid customer's name
+        if (!name || name === 'Cliente' || name === 'TestUser' || name.trim() === '') {
           return `¡Perfecto! Tengo todos los datos de tu reserva:
 
 📅 **${day.toUpperCase()}** ${time ? `a las ${time}` : ''}
@@ -602,29 +652,43 @@ Pero tranqui, te puedo ayudar con:
 Para confirmarla solo me falta tu nombre. ¿Cómo te llamás?`
         }
         
-        // Complete reservation information - save to database
-        const reservationSaved = await this.saveReservation(business.id, customerNumber, name, day, time, type, people)
+        // Complete reservation information - generate payment link
+        const montoSeña = 1 * parseInt(people) // $1 peso por persona para pruebas
         
-        if (reservationSaved) {
-          return `¡Bárbaro ${name}! Tengo anotada tu reserva:
+        try {
+          const linkPago = await mercadoPagoService.crearLinkDePago(
+            montoSeña,
+            `Seña reserva - ${name} - ${day} ${time} - ${people} personas`,
+            customerNumber
+          )
+          
+          return `¡Bárbaro ${name}! Tengo todos los datos de tu reserva:
 
 📅 **${day.toUpperCase()}** ${time ? `a las ${time}` : ''}
 👥 **${people} personas**
 🍽️ **Para ${type}**
 
-✅ **Tu reserva está CONFIRMADA**
+⚠️ **IMPORTANTE - LEÉ ESTAS CONDICIONES:**
 
-A nombre de: ${name}
-📱 Teléfono: ${customerNumber}
+⚠️ Si queres asegurar tu lugar, será obligatorio abonar una seña.
+⚠️ Tolerancia de reserva hasta las 22hs, luego, se pierde el lugar (SIN EXCEPCIÓN)
+⚠️ Menores de 18 años pueden permanecer en el bar hasta 1am.
 
-Te vamos a estar esperando en ${business.name}. ¡Nos vemos el ${day}! 🎉`
-        } else {
-          return `¡Dale ${name ? name : ''}! Tengo todos los datos de tu reserva pero hubo un problema al confirmarla en el sistema. 
+💰 **SEÑA REQUERIDA: $${montoSeña} pesos** ($1 por persona)
 
-Por favor contactanos directamente para asegurar tu mesa:
-📱 ${business.phone || 'WhatsApp'}
+🔗 **PAGÁ TU SEÑA AQUÍ:**
+${linkPago}
 
-Disculpas por el inconveniente.`
+Una vez que completes el pago, se confirma tu reserva automáticamente! ✅`
+        } catch (error) {
+          console.error('Error generando link de pago:', error)
+          return `¡Bárbaro ${name}! Tengo todos los datos de tu reserva:
+
+📅 **${day.toUpperCase()}** ${time ? `a las ${time}` : ''}
+👥 **${people} personas**
+🍽️ **Para ${type}**
+
+Hubo un problema generando el link de pago. Por favor, contacta al restaurant directamente.`
         }
       } else {
         // Missing people count
@@ -802,14 +866,19 @@ Contame y te la confirmo enseguida.`
       }
 
       // Parse time - handle formats like "20hs", "20:00hs", "8pm"
-      const timeMatch = time.match(/(\d{1,2})(?::(\d{2}))?(?:hs|:00hs)?/)
-      if (timeMatch) {
-        const hours = parseInt(timeMatch[1])
-        const minutes = parseInt(timeMatch[2] || '0')
-        targetDate.setHours(hours, minutes, 0, 0)
+      if (time && time.trim() !== '') {
+        const timeMatch = time.match(/(\d{1,2})(?::(\d{2}))?(?:hs|:00hs)?/)
+        if (timeMatch) {
+          const hours = parseInt(timeMatch[1])
+          const minutes = parseInt(timeMatch[2] || '0')
+          targetDate.setHours(hours, minutes, 0, 0)
+        } else {
+          console.error('Unknown time format:', time)
+          return null
+        }
       } else {
-        console.error('Unknown time format:', time)
-        return null
+        // No time specified, use default time for dinner (20:00)
+        targetDate.setHours(20, 0, 0, 0)
       }
 
       return targetDate
@@ -863,19 +932,19 @@ Contame y te la confirmo enseguida.`
                                      existingContext.reservation_type || 
                                      existingContext.reservation_people
 
-    // Check if enough time has passed (more than 5 minutes since last update)
+    // Check if enough time has passed (more than 15 minutes since last update)
     const lastUpdate = new Date(existingContext.updated_at || existingContext.created_at || '')
-    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000)
-    const hasBeenLongTime = lastUpdate < fiveMinutesAgo
+    const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000)
+    const hasBeenLongTime = lastUpdate < fifteenMinutesAgo
 
     // It's a new conversation if:
     // 1. Has complete reservation data in a single message (new reservation)
     // 2. Has greeting AND complete reservation data AND existing context has reservation data
-    // 3. Has been more than 5 minutes since last update AND has greeting
+    // 3. Has been more than 15 minutes since last update AND has greeting AND no current reservation in progress
     // 4. NEVER reset if just providing name for existing reservation
     return (hasCompleteReservationData && !isProvidingNameForReservation) ||
            (hasGreeting && hasCompleteReservationData && contextHasReservationData && !isProvidingNameForReservation) ||
-           (hasBeenLongTime && hasGreeting && !isProvidingNameForReservation)
+           (hasBeenLongTime && hasGreeting && !contextHasReservationData && !isProvidingNameForReservation)
   }
 
   private async clearConversationContext(customerPhone: string, businessId: string): Promise<void> {
@@ -893,6 +962,12 @@ Contame y te la confirmo enseguida.`
     try {
       // Don't use AI for reservation details - let specific logic handle it
       if (this.isReservationDetails(input.toLowerCase())) {
+        return null
+      }
+      
+      // Don't use AI for transfer receipts - let specific logic handle it
+      if (this.isTransferReceipt(input, input.toLowerCase())) {
+        console.log('🔍 AI detected transfer receipt, delegating to specific logic')
         return null
       }
       
@@ -1007,7 +1082,9 @@ RESPUESTA (máximo 300 caracteres):`
     }
     
     // Check if message combines greeting + reservation request with enhanced detection
-    const hasGreeting = message.includes('hola') || message.includes('buenas')
+    const hasGreeting = message.includes('hola') || message.includes('buenas') || 
+                       message.includes('como estas') || message.includes('como andas') || 
+                       message.includes('que tal') || message.includes('como va')
     const hasReservationKeywords = message.includes('reserva') || message.includes('mesa') || message.includes('booking')
     const hasReservationVerbs = message.includes('reservar') || message.includes('reservemos') || message.includes('reservo')
     const hasReservationIntent = (message.includes('quisiera') || message.includes('quiero') || message.includes('queremos') || message.includes('me gustaria')) && 
@@ -1429,7 +1506,7 @@ ${redeemableItemsText}
         business_id: businessId,
         ...existingContext,
         ...extractedData,
-        expires_at: new Date(Date.now() + 20 * 60 * 1000).toISOString() // 20 minutes from now
+        expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString() // 15 minutes from now
       }
 
       // Upsert conversation context
@@ -1441,6 +1518,224 @@ ${redeemableItemsText}
       console.error('Error updating conversation context:', error)
       // Don't throw error, just log it
     }
+  }
+
+  // Function to detect transfer receipts
+  private isTransferReceipt(input: string, lowerInput: string): boolean {
+    // Keywords that indicate a transfer receipt
+    const receiptKeywords = [
+      'comprobante', 'transferencia', 'tranferí', 'transferi', 'envié', 'envie', 
+      'pagué', 'pague', 'mandé', 'mande', 'listo', 'hecho', 'transferido',
+      'enviado', 'pagado', 'seña', 'señé', 'sene'
+    ]
+    
+    // Transfer-related patterns
+    const transferPatterns = [
+      /transferí/i, /transferi/i, /transfirí/i, /transfiri/i,
+      /envié/i, /envie/i, /mandé/i, /mande/i,
+      /pagué/i, /pague/i, /señé/i, /sene/i,
+      /ya está/i, /ya esta/i, /listo/i, /hecho/i
+    ]
+    
+    // Check for keywords
+    const hasReceiptKeyword = receiptKeywords.some(keyword => lowerInput.includes(keyword))
+    
+    // Check for patterns
+    const hasTransferPattern = transferPatterns.some(pattern => pattern.test(input))
+    
+    // Check for monetary amounts (indicates payment)
+    const hasAmount = /\$\d+|(\d+)\s*(pesos?|usd|dolares?)/i.test(input)
+    
+    return hasReceiptKeyword || hasTransferPattern || (hasAmount && lowerInput.includes('transfer'))
+  }
+
+  // Function to process transfer receipts
+  private async processTransferReceipt(input: string, business: BusinessInfo, customerNumber: string, customerName?: string, context?: ConversationContext, transferNumber?: string | null): Promise<string> {
+    // Si no hay contexto de reserva pendiente, pedir los datos primero
+    if (!context?.reservation_day || !context?.reservation_people || !context?.customer_name) {
+      // Si hay un número de transferencia pero no hay reserva pendiente
+      if (transferNumber) {
+        return `¡Hola! Recibí tu número de transferencia: **${transferNumber}**
+
+Pero no tengo una reserva pendiente asociada a tu número. 
+
+Para confirmar tu reserva necesito que me digas:
+📅 **¿Para qué día?** (ej: sábado, lunes, 15/09)
+👥 **¿Para cuántas personas?**
+🍽️ **¿Para cena o baile?**
+
+Una vez que tengas tu reserva pendiente, podré verificar tu transferencia con MercadoPago.`
+      }
+      
+      // Preguntar por los datos de reserva primero
+      return this.generateReservationRequest(business, customerName)
+    }
+
+    // Si no hay número de transferencia, pedirlo
+    if (!transferNumber) {
+      const expectedAmount = 1000 * parseInt(context.reservation_people.toString())
+      
+      return `¡Perfecto ${context.customer_name}! Para confirmar tu reserva:
+
+📅 **${context.reservation_day.toUpperCase()}** ${context.reservation_time ? `a las ${context.reservation_time}` : ''}
+👥 **${context.reservation_people} personas**
+💰 **Seña requerida:** $${expectedAmount} (${context.reservation_people} x $1000)
+
+🏦 **Transferí a:** ${business.transfer_alias || 'alias.no.configurado'}
+
+Una vez que hagas la transferencia, **enviame el número de referencia o ID de la transferencia** para verificarla con MercadoPago.
+
+Ejemplo: "12345678901" o "MP-ABC123XYZ"`
+    }
+
+    // *** VERIFICAR TRANSFERENCIA CON MERCADOPAGO ***
+    console.log(`🔍 Verificando transferencia ${transferNumber} con MercadoPago...`)
+    
+    const expectedAmount = 1000 * parseInt(context.reservation_people.toString())
+    
+    try {
+      // Importar MercadoPagoService aquí para evitar dependencias circulares
+      const { default: MercadoPagoService } = await import('../services/mercadoPagoService')
+      const mercadoPagoService = new MercadoPagoService()
+      
+      // Verificar la transferencia
+      const verificationResult = await mercadoPagoService.buscarPagoPorId(transferNumber)
+      
+      if (!verificationResult) {
+        return `❌ **TRANSFERENCIA NO ENCONTRADA** ❌
+
+🔍 No encontré ningún pago con el ID: **${transferNumber}**
+
+Verificá que hayas copiado correctamente el número de referencia de tu transferencia.
+
+Si el problema persiste:
+• Revisá el comprobante y enviame el ID correcto
+• Asegurate de haber transferido a: **${business.transfer_alias || 'alias.no.configurado'}**
+• Contactanos directamente: ${business.phone || business.email || 'contacto no disponible'}`
+      }
+
+      // Verificar el estado y monto
+      const tolerance = process.env.NODE_ENV === 'development' ? 150000 : 100
+      const isValid = mercadoPagoService.verificarPago(verificationResult, expectedAmount, tolerance)
+      
+      console.log(`💰 Verificación MercadoPago:`)
+      console.log(`   - ID: ${verificationResult.id}`)
+      console.log(`   - Estado: ${verificationResult.status}`)
+      console.log(`   - Monto: $${verificationResult.amount}`)
+      console.log(`   - Esperado: $${expectedAmount}`)
+      console.log(`   - Válido: ${isValid}`)
+      
+      if (!isValid) {
+        const paymentInfo = mercadoPagoService.formatearInfoPago(verificationResult)
+        
+        return `❌ **PROBLEMA CON LA TRANSFERENCIA** ❌
+
+${paymentInfo}
+
+🔍 **Monto requerido:** $${expectedAmount} (${context.reservation_people} personas x $1000)
+
+⚠️ **Problemas detectados:**
+${verificationResult.status !== 'approved' ? `• Estado: ${verificationResult.status} (debe estar aprobado)` : ''}
+${Math.abs(verificationResult.amount - expectedAmount) > tolerance ? `• Monto incorrecto: $${verificationResult.amount} (esperado: $${expectedAmount})` : ''}
+
+Para confirmar tu reserva:
+🏦 Transferí exactamente **$${expectedAmount}** a: **${business.transfer_alias || 'alias.no.configurado'}**
+📱 Y enviame el nuevo número de referencia`
+      }
+
+      // *** TRANSFERENCIA VERIFICADA EXITOSAMENTE ***
+      console.log(`✅ Transferencia verificada exitosamente: ${transferNumber}`)
+      
+      // Guardar la reserva
+      const reservationSaved = await this.saveReservation(
+        business.id, 
+        customerNumber, 
+        context.customer_name, 
+        context.reservation_day, 
+        context.reservation_time || '', 
+        context.reservation_type || 'cena', 
+        context.reservation_people.toString()
+      )
+
+      if (reservationSaved) {
+        // Limpiar el contexto - reserva confirmada
+        await this.clearConversationContext(customerNumber, business.id)
+        
+        const paymentInfo = mercadoPagoService.formatearInfoPago(verificationResult)
+        
+        return `¡EXCELENTE ${context.customer_name}! 🎉
+
+✅ **RESERVA CONFIRMADA** ✅
+
+📅 **${context.reservation_day.toUpperCase()}** ${context.reservation_time ? `a las ${context.reservation_time}` : ''}
+👥 **${context.reservation_people} personas**
+🍽️ **Para ${context.reservation_type || 'cena'}**
+
+${paymentInfo}
+📱 A nombre de: ${context.customer_name}
+📞 Teléfono: ${customerNumber}
+
+Te vamos a estar esperando en ${business.name}. 
+¡Nos vemos el ${context.reservation_day}! 🍻
+
+¡Gracias por elegirnos! 🙌`
+      } else {
+        const paymentInfo = mercadoPagoService.formatearInfoPago(verificationResult)
+        
+        return `✅ **TRANSFERENCIA VERIFICADA** ✅
+
+${paymentInfo}
+
+❗ Pero hubo un problema técnico al confirmar la reserva en el sistema.
+
+Por favor contactanos directamente:
+📞 ${business.phone || 'Teléfono no disponible'}
+📧 ${business.email || 'Email no disponible'}
+
+Tu transferencia está confirmada, solo necesitamos registrar la reserva manualmente.`
+      }
+      
+    } catch (error: any) {
+      console.error('Error verificando transferencia con MercadoPago:', error)
+      
+      return `⚠️ **ERROR VERIFICANDO TRANSFERENCIA** ⚠️
+
+Hubo un problema técnico al verificar tu transferencia con MercadoPago.
+
+🔍 **ID enviado:** ${transferNumber}
+
+Intentá nuevamente en unos minutos o contactanos directamente:
+📞 ${business.phone || 'Teléfono no disponible'}
+📧 ${business.email || 'Email no disponible'}
+
+**Error técnico:** ${error?.message || 'Error desconocido'}`
+    }
+  }
+
+  /**
+   * Generar solicitud de datos de reserva
+   */
+  private generateReservationRequest(business: BusinessInfo, customerName?: string): string {
+    const greeting = customerName ? `¡Hola ${customerName}! ` : '¡Hola! '
+    
+    return `${greeting}¡Perfecto para hacer tu reserva! 🍽️
+
+Para confirmar necesito que me digas:
+
+📅 **¿Para qué día?** 
+   Ejemplo: "sábado", "15 de septiembre", "mañana"
+
+� **¿Para cuántas personas?**
+   Ejemplo: "4 personas", "somos 6"
+
+🍽️ **¿Para cena o baile?**
+   • Cena: hasta las 23:00hs
+   • Baile: después de las 23:00hs
+
+💰 **Seña:** $1 por persona
+🏦 **CBU/Alias:** ${business.transfer_alias || 'alias.no.configurado'}
+
+¡Enviame esos datos y te confirmo la reserva al toque! 🎉`
   }
 
 }
