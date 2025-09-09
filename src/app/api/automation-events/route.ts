@@ -1,29 +1,75 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { AutomationEventSystem } from '@/services/automationEventSystem'
+import { createClient } from '@supabase/supabase-js'
 
 const eventSystem = new AutomationEventSystem()
 
+// Supabase client para logging
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+)
+
+// Helper para registrar ejecuciones
+async function logExecution(
+  eventType: string, 
+  status: 'started' | 'completed' | 'error', 
+  message: string, 
+  details: any = {}
+) {
+  try {
+    await supabase.from('automation_execution_logs').insert([{
+      event_type: eventType,
+      status: status,
+      message: message,
+      customers_processed: details.customersProcessed || 0,
+      messages_sent: details.messagesSent || 0,
+      errors_count: details.errorsCount || 0,
+      execution_time_ms: details.executionTime || null,
+      details: details
+    }])
+    console.log(`📝 Log registrado: ${eventType} - ${status}`)
+  } catch (error) {
+    console.error('❌ Error registrando log:', error)
+  }
+}
+
 // 🚀 EVENT-DRIVEN Automation Endpoints
 export async function GET(request: NextRequest) {
+  const startTime = Date.now()
+  let eventType = 'unknown'
+  
   try {
     const { searchParams } = new URL(request.url)
-    const eventType = searchParams.get('event')
+    eventType = searchParams.get('event') || 'unknown'
     const businessId = searchParams.get('business_id')
     
     console.log(`🚀 EVENT API: ${eventType} para business: ${businessId || 'todos'}`)
+    
+    // Log inicio de ejecución
+    await logExecution(eventType, 'started', `Iniciando automatización ${eventType}`)
     
     switch (eventType) {
       
       case 'daily':
         // 🌅 Evento diario combinado: cumpleaños + evaluación VIP
         console.log('🌅 Ejecutando automatizaciones diarias...')
-        await eventSystem.checkBirthdaysDaily()
-        await eventSystem.checkVipEvaluation()
+        const birthdayResult = await eventSystem.checkBirthdaysDaily()
+        const vipResult = await eventSystem.checkVipEvaluation()
+        
+        const executionTime = Date.now() - startTime
+        await logExecution(eventType, 'completed', 'Automatizaciones diarias completadas (cumpleaños + VIP)', {
+          executionTime,
+          birthdayResult,
+          vipResult
+        })
+        
         return NextResponse.json({ 
           status: 'success', 
           event: 'daily', 
           message: 'Automatizaciones diarias completadas (cumpleaños + VIP)',
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
+          executionTimeMs: executionTime
         })
       
       case 'birthdays':
@@ -81,6 +127,15 @@ export async function GET(request: NextRequest) {
     
   } catch (error: any) {
     console.error('Error procesando evento de automatización:', error)
+    
+    // Log del error
+    const executionTime = Date.now() - startTime
+    await logExecution(eventType, 'error', `Error en automatización: ${error.message}`, {
+      executionTime,
+      error: error.message,
+      stack: error.stack
+    })
+    
     return NextResponse.json({ 
       error: 'Error procesando evento',
       message: error.message,
