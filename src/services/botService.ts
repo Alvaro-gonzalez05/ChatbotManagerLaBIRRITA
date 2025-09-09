@@ -569,39 +569,10 @@ Pero tranqui, te puedo ayudar con:
     const lowerInput = input.toLowerCase()
     
     
-    // Extract day information from current message (overrides context)
-    if (lowerInput.includes('lunes que viene') || lowerInput.includes('próximo lunes') || lowerInput.includes('proximo lunes')) {
-      day = 'lunes que viene'
-    } else if (lowerInput.includes('este lunes') || lowerInput.includes('lunes')) {
-      day = 'lunes'
-    } else if (lowerInput.includes('martes que viene') || lowerInput.includes('próximo martes') || lowerInput.includes('proximo martes')) {
-      day = 'martes que viene'
-    } else if (lowerInput.includes('este martes') || lowerInput.includes('martes')) {
-      day = 'martes'
-    } else if (lowerInput.includes('miércoles que viene') || lowerInput.includes('miercoles que viene') || lowerInput.includes('próximo miércoles') || lowerInput.includes('proximo miercoles')) {
-      day = 'miércoles que viene'
-    } else if (lowerInput.includes('este miércoles') || lowerInput.includes('este miercoles') || lowerInput.includes('miércoles') || lowerInput.includes('miercoles')) {
-      day = 'miércoles'
-    } else if (lowerInput.includes('jueves que viene') || lowerInput.includes('próximo jueves') || lowerInput.includes('proximo jueves')) {
-      day = 'jueves que viene'
-    } else if (lowerInput.includes('este jueves') || lowerInput.includes('jueves')) {
-      day = 'jueves'
-    } else if (lowerInput.includes('viernes que viene') || lowerInput.includes('próximo viernes') || lowerInput.includes('proximo viernes')) {
-      day = 'viernes que viene'
-    } else if (lowerInput.includes('este viernes') || lowerInput.includes('viernes')) {
-      day = 'viernes'
-    } else if (lowerInput.includes('sábado que viene') || lowerInput.includes('sabado que viene') || lowerInput.includes('próximo sábado') || lowerInput.includes('proximo sabado')) {
-      day = 'sábado que viene'
-    } else if (lowerInput.includes('este sábado') || lowerInput.includes('este sabado') || lowerInput.includes('sábado') || lowerInput.includes('sabado')) {
-      day = 'sábado'
-    } else if (lowerInput.includes('domingo que viene') || lowerInput.includes('próximo domingo') || lowerInput.includes('proximo domingo')) {
-      day = 'domingo que viene'
-    } else if (lowerInput.includes('este domingo') || lowerInput.includes('domingo')) {
-      day = 'domingo'
-    } else if (lowerInput.includes('mañana')) {
-      day = 'mañana'
-    } else if (lowerInput.includes('hoy')) {
-      day = 'hoy'
+    // Extract day information from current message using enhanced date parsing
+    const extractedDay = this.extractDateFromMessage(input)
+    if (extractedDay) {
+      day = extractedDay
     }
 
     // Extract time information from current message (overrides context)
@@ -1441,21 +1412,10 @@ ${redeemableItemsText}
         lastMessageTime: new Date().toISOString()
       }
 
-      // Extract day information
-      if (lowerInput.includes('viernes que viene') || lowerInput.includes('próximo viernes')) {
-        extractedData.reservation_day = 'viernes que viene'
-      } else if (lowerInput.includes('viernes')) {
-        extractedData.reservation_day = 'viernes'
-      } else if (lowerInput.includes('sábado que viene') || lowerInput.includes('próximo sábado')) {
-        extractedData.reservation_day = 'sábado que viene'
-      } else if (lowerInput.includes('sábado')) {
-        extractedData.reservation_day = 'sábado'
-      } else if (lowerInput.includes('domingo')) {
-        extractedData.reservation_day = 'domingo'
-      } else if (lowerInput.includes('mañana')) {
-        extractedData.reservation_day = 'mañana'
-      } else if (lowerInput.includes('hoy')) {
-        extractedData.reservation_day = 'hoy'
+      // Extract day information - Enhanced date parsing
+      const extractedDay = this.extractDateFromMessage(messageText)
+      if (extractedDay) {
+        extractedData.reservation_day = extractedDay
       }
 
       // Extract time information
@@ -1710,6 +1670,107 @@ Intentá nuevamente en unos minutos o contactanos directamente:
 
 **Error técnico:** ${error?.message || 'Error desconocido'}`
     }
+  }
+
+  /**
+   * Extract date from message with enhanced parsing - supports both exact dates and relative days
+   */
+  private extractDateFromMessage(messageText: string): string | null {
+    const lowerInput = messageText.toLowerCase()
+    
+    // ========== 1. EXACT DATES (highest priority) ==========
+    
+    // Check for specific date patterns: "DD de MONTH"
+    const dateWithMonthMatch = messageText.match(/(\d{1,2})\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/i)
+    if (dateWithMonthMatch) {
+      const day = dateWithMonthMatch[1]
+      const month = dateWithMonthMatch[2].toLowerCase()
+      return `${day} de ${month}`
+    }
+    
+    // Check for "para el XX de MONTH"
+    const paraElMatch = messageText.match(/para\s+el\s+(\d{1,2})\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/i)
+    if (paraElMatch) {
+      const day = paraElMatch[1]
+      const month = paraElMatch[2].toLowerCase()
+      return `${day} de ${month}`
+    }
+    
+    // ========== 2. RELATIVE DAYS WITH CONTEXT ==========
+    
+    // LUNES variants
+    if (lowerInput.includes('lunes que viene') || lowerInput.includes('próximo lunes') || lowerInput.includes('proximo lunes')) {
+      return 'lunes que viene'
+    } else if (lowerInput.includes('este lunes')) {
+      return 'lunes'
+    }
+    
+    // MARTES variants  
+    if (lowerInput.includes('martes que viene') || lowerInput.includes('próximo martes') || lowerInput.includes('proximo martes')) {
+      return 'martes que viene'
+    } else if (lowerInput.includes('este martes')) {
+      return 'martes'
+    }
+    
+    // MIÉRCOLES variants
+    if (lowerInput.includes('miércoles que viene') || lowerInput.includes('miercoles que viene') || 
+        lowerInput.includes('próximo miércoles') || lowerInput.includes('proximo miercoles')) {
+      return 'miércoles que viene'
+    } else if (lowerInput.includes('este miércoles') || lowerInput.includes('este miercoles')) {
+      return 'miércoles'
+    }
+    
+    // JUEVES variants
+    if (lowerInput.includes('jueves que viene') || lowerInput.includes('próximo jueves') || lowerInput.includes('proximo jueves')) {
+      return 'jueves que viene'
+    } else if (lowerInput.includes('este jueves')) {
+      return 'jueves'
+    }
+    
+    // VIERNES variants
+    if (lowerInput.includes('viernes que viene') || lowerInput.includes('próximo viernes') || lowerInput.includes('proximo viernes')) {
+      return 'viernes que viene'
+    } else if (lowerInput.includes('este viernes')) {
+      return 'viernes'
+    }
+    
+    // SÁBADO variants
+    if (lowerInput.includes('sábado que viene') || lowerInput.includes('sabado que viene') || 
+        lowerInput.includes('próximo sábado') || lowerInput.includes('proximo sabado')) {
+      return 'sábado que viene'
+    } else if (lowerInput.includes('este sábado') || lowerInput.includes('este sabado')) {
+      return 'sábado'
+    }
+    
+    // DOMINGO variants
+    if (lowerInput.includes('domingo que viene') || lowerInput.includes('próximo domingo') || lowerInput.includes('proximo domingo')) {
+      return 'domingo que viene'
+    } else if (lowerInput.includes('este domingo')) {
+      return 'domingo'
+    }
+    
+    // ========== 3. SIMPLE DAY NAMES (with word boundaries) ==========
+    const daysOfWeek = ['domingo', 'lunes', 'martes', 'miércoles', 'miercoles', 'jueves', 'viernes', 'sábado', 'sabado']
+    
+    for (const day of daysOfWeek) {
+      // Use word boundaries to avoid false positives (like "viernes" in "septiembre")
+      const dayRegex = new RegExp(`\\b${day}\\b`, 'i')
+      if (dayRegex.test(messageText)) {
+        // Normalize miercoles -> miércoles, sabado -> sábado
+        if (day === 'miercoles') return 'miércoles'
+        if (day === 'sabado') return 'sábado'
+        return day
+      }
+    }
+    
+    // ========== 4. RELATIVE DATES ==========
+    if (lowerInput.includes('mañana') || lowerInput.includes('manana')) {
+      return 'mañana'
+    } else if (lowerInput.includes('hoy')) {
+      return 'hoy'
+    }
+    
+    return null
   }
 
   /**
