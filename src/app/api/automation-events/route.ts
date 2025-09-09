@@ -60,6 +60,8 @@ export async function GET(request: NextRequest) {
         const executionTime = Date.now() - startTime
         await logExecution(eventType, 'completed', 'Automatizaciones diarias completadas (cumpleaños + VIP)', {
           executionTime,
+          customersProcessed: birthdayResult.processed,
+          messagesSent: birthdayResult.messages_sent,
           birthdayResult,
           vipResult
         })

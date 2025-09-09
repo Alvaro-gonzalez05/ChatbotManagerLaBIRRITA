@@ -95,7 +95,7 @@ export class AutomationEventSystem {
   }
 
   // 🎂 EVENT: Verificación diaria de cumpleaños (optimizada)
-  async checkBirthdaysDaily(): Promise<void> {
+  async checkBirthdaysDaily(): Promise<{ processed: number; messages_sent: number }> {
     console.log('🎂 Evento: Verificación diaria de cumpleaños...')
     
     try {
@@ -107,27 +107,48 @@ export class AutomationEventSystem {
         .not('phone', 'is', null)
 
       if (error || !customers) {
-        console.log('No hay clientes con cumpleaños configurados')
-        return
+        console.log('❌ No hay clientes con cumpleaños configurados o error:', error)
+        return { processed: 0, messages_sent: 0 }
       }
 
-      // Filtrar cumpleaños para mañana (más eficiente que SQL complejo)
+      console.log(`📊 Total de clientes con cumpleaños: ${customers.length}`)
+
+      // Debug: Mostrar todos los cumpleaños encontrados
+      customers.forEach(customer => {
+        console.log(`👤 Cliente: ${customer.name}, Birthday: ${customer.birthday}, Phone: ${customer.phone}`)
+      })
+
+      // Filtrar cumpleaños para en 7 días
       const today = new Date()
       const targetDate = new Date(today)
-      targetDate.setDate(today.getDate() + 7) // 7 días antes
+      targetDate.setDate(today.getDate() + 7) // 7 días después
       
       const targetMonth = String(targetDate.getMonth() + 1).padStart(2, '0')
       const targetDay = String(targetDate.getDate()).padStart(2, '0')
       const birthdayFilter = `${targetMonth}-${targetDay}`
 
+      console.log(`📅 Hoy: ${today.toISOString().split('T')[0]}`)
+      console.log(`🎯 Buscando cumpleaños para: ${targetDate.toISOString().split('T')[0]} (formato: ${birthdayFilter})`)
+
       const birthdayCustomers = customers.filter(customer => {
         if (!customer.birthday) return false
+        
         const birthdayParts = customer.birthday.split('-')
         const customerBirthday = `${birthdayParts[1]}-${birthdayParts[2]}`
+        
+        console.log(`🔍 Comparando: Cliente ${customer.name} - Birthday ${customer.birthday} -> ${customerBirthday} vs ${birthdayFilter}`)
+        
         return customerBirthday === birthdayFilter
       })
 
       console.log(`🎯 Encontrados ${birthdayCustomers.length} clientes con cumpleaños en 7 días`)
+
+      if (birthdayCustomers.length > 0) {
+        console.log('🎉 Clientes con cumpleaños encontrados:')
+        birthdayCustomers.forEach(customer => {
+          console.log(`  - ${customer.name} (${customer.birthday})`)
+        })
+      }
 
       // Procesar cada cliente por business
       const businessGroups = this.groupBy(birthdayCustomers, 'business_id')
@@ -136,8 +157,11 @@ export class AutomationEventSystem {
         await this.processBirthdayCustomersForBusiness(businessId, customers as Customer[])
       }
 
+      return { processed: birthdayCustomers.length, messages_sent: birthdayCustomers.length }
+
     } catch (error) {
       console.error('Error en verificación diaria de cumpleaños:', error)
+      throw error
     }
   }
 
