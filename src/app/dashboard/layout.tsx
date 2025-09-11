@@ -19,7 +19,7 @@ import {
 } from 'lucide-react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { toast } from 'sonner'
 
 interface NavigationItem {
@@ -47,8 +47,38 @@ export default function DashboardLayout({
   const { user, businessUser, hasPermission, signOut, loading } = useAuth()
   const pathname = usePathname()
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [loadingTimeout, setLoadingTimeout] = useState(false)
+  const [allowRedirect, setAllowRedirect] = useState(false)
 
-  console.log('DashboardLayout render:', { user: !!user, loading, pathname })
+  console.log('🏠 DashboardLayout render:', { user: !!user, loading, pathname, allowRedirect })
+
+  // Wait for auth to complete before allowing any redirects  
+  useEffect(() => {
+    if (!loading) {
+      const timer = setTimeout(() => {
+        setAllowRedirect(true)
+      }, 200) // Small delay after loading completes
+      
+      return () => clearTimeout(timer)
+    }
+  }, [loading])
+
+  // Add timeout for loading state to prevent infinite loading
+  useEffect(() => {
+    if (loading) {
+      const timer = setTimeout(() => {
+        setLoadingTimeout(true)
+        console.warn('Loading timeout reached - forcing redirect to login')
+        if (typeof window !== 'undefined') {
+          window.location.replace('/auth/login')
+        }
+      }, 8000) // 8 seconds timeout
+
+      return () => clearTimeout(timer)
+    } else {
+      setLoadingTimeout(false)
+    }
+  }, [loading])
 
   const handleSignOut = async () => {
     try {
@@ -65,25 +95,42 @@ export default function DashboardLayout({
     }
   }
 
-  if (loading) {
+  if (loading && !loadingTimeout) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-2"></div>
+          <p className="text-sm text-muted-foreground">Cargando...</p>
+          <p className="text-xs text-muted-foreground mt-2">Si tarda mucho, verifica tu conexión</p>
+        </div>
       </div>
     )
   }
 
-  // If no user, redirect to auth instead of showing loading
-  if (!user) {
+  // If no user after loading completes, redirect to login
+  if (!user && !loading && allowRedirect) {
+    console.log('No user found after loading completed, redirecting to login')
     if (typeof window !== 'undefined') {
-      window.location.href = '/auth/login'
+      window.location.replace('/auth/login')
     }
+  }
+
+  // Show loading while auth is in progress OR while waiting for redirect delay
+  if (loading || (!user && !allowRedirect)) {
+    console.log('⏳ Showing loading screen:', { loading, user: !!user, allowRedirect })
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-2"></div>
+          <p className="text-sm text-muted-foreground">
+            {loading ? 'Cargando usuario...' : 'Verificando sesión...'}
+          </p>
+        </div>
       </div>
     )
   }
+
+  console.log('✅ Rendering dashboard with user:', !!user)
 
   const filteredNavigation = navigation.filter(item => hasPermission(item.permission))
 
