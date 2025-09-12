@@ -1,0 +1,368 @@
+import { NextRequest, NextResponse } from 'next/server'
+import MercadoPagoService from '@/services/mercadoPagoService'
+import { WhatsAppService } from '@/services/whatsappService'
+import { createClient } from '@supabase/supabase-js'
+import crypto from 'crypto'
+
+// Usar Service Role Key para bypasear RLS
+const supabase = createClient(
+  process.env.SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+)
+
+const mercadoPagoService = new MercadoPagoService()
+const whatsappService = new WhatsAppService()
+
+// MercadoPago webhook verification (GET method for challenge verification)
+export async function GET(request: NextRequest) {
+  console.log('🔍 GET request received on MercadoPago webhook')
+  
+  // MercadoPago puede enviar un challenge para verificar el webhook
+  const searchParams = request.nextUrl.searchParams
+  const challenge = searchParams.get('challenge')
+  
+  if (challenge) {
+    console.log('✅ MercadoPago webhook verification challenge received:', challenge)
+    return new NextResponse(challenge)
+  }
+  
+  // Si no hay challenge, mostrar status
+  return NextResponse.json({ 
+    status: 'MercadoPago webhook endpoint active',
+    timestamp: new Date().toISOString(),
+    method: 'GET'
+  })
+}
+
+// MercadoPago webhook to receive payment notifications (POST method)
+export async function POST(request: NextRequest) {
+  console.log('📱 POST request received on MercadoPago webhook')
+  console.log('📅 Timestamp:', new Date().toISOString())
+  
+  try {
+    // Obtener el cuerpo de la request como texto para logging
+    let body: string = ''
+    try {
+      body = await request.text()
+      console.log('📄 Raw webhook body:', body)
+    } catch (error) {
+      console.error('❌ Error reading request body:', error)
+      return NextResponse.json({ 
+        error: 'Invalid request body',
+        timestamp: new Date().toISOString()
+      }, { status: 400 })
+    }
+
+    // Validar que el body no esté vacío
+    if (!body || body.trim() === '') {
+      console.log('⚠️  Empty request body received')
+      return NextResponse.json({ 
+        status: 'empty body received',
+        timestamp: new Date().toISOString()
+      }, { status: 200 })
+    }
+
+    // Headers para debugging
+    const headers = Object.fromEntries(request.headers.entries())
+    console.log('📋 Request headers:', headers)
+
+    // Intentar parsear el JSON
+    let webhookData: any
+    try {
+      webhookData = JSON.parse(body)
+      console.log('📱 Parsed MercadoPago webhook data:', JSON.stringify(webhookData, null, 2))
+    } catch (parseError) {
+      console.error('❌ Error parsing JSON:', parseError)
+      console.log('📄 Body content was:', body)
+      return NextResponse.json({ 
+        error: 'Invalid JSON format',
+        body: body,
+        timestamp: new Date().toISOString()
+      }, { status: 200 }) // Return 200 to avoid retries
+    }
+
+    // Validar estructura básica del webhook
+    if (!webhookData) {
+      console.log('⚠️  No webhook data received')
+      return NextResponse.json({ 
+        status: 'no data received',
+        timestamp: new Date().toISOString()
+      }, { status: 200 })
+    }
+
+    // Log detailed webhook info
+    console.log('🔍 Webhook analysis:')
+    console.log('   - action:', webhookData.action)
+    console.log('   - type:', webhookData.type)
+    console.log('   - data:', webhookData.data)
+    console.log('   - live_mode:', webhookData.live_mode)
+
+    // Verificar que es una notificación de pago (ambos formatos)
+    const isPaymentNotification = (
+      (webhookData.type === 'payment') || 
+      (webhookData.action && webhookData.action.includes('payment'))
+    )
+
+    if (!isPaymentNotification) {
+      console.log(`ℹ️  Received non-payment webhook: type=${webhookData.type}, action=${webhookData.action}`)
+      return NextResponse.json({ 
+        status: 'ignored - not a payment notification',
+        type: webhookData.type,
+        action: webhookData.action,
+        timestamp: new Date().toISOString()
+      }, { status: 200 })
+    }
+
+    // Extraer payment ID
+    let paymentId: string = ''
+    if (webhookData.data && webhookData.data.id) {
+      paymentId = webhookData.data.id.toString()
+    } else if (webhookData.id) {
+      paymentId = webhookData.id.toString()
+    }
+
+    if (!paymentId) {
+      console.log('⚠️  No payment ID found in webhook')
+      return NextResponse.json({ 
+        status: 'no payment id found',
+        webhook_data: webhookData,
+        timestamp: new Date().toISOString()
+      }, { status: 200 })
+    }
+
+    console.log(`💳 Processing payment notification: ${paymentId}`)
+
+    // Para pagos de prueba, simular respuesta exitosa
+    if (!webhookData.live_mode || paymentId === '123456') {
+      console.log('🧪 Test payment detected, returning success')
+      return NextResponse.json({ 
+        status: 'test payment processed',
+        payment_id: paymentId,
+        timestamp: new Date().toISOString()
+      }, { status: 200 })
+    }
+
+    // Buscar el pago en MercadoPago
+    let paymentInfo
+    try {
+      console.log(`🔍 Searching for payment in MercadoPago: ${paymentId}`)
+      paymentInfo = await mercadoPagoService.buscarPagoPorId(paymentId)
+    } catch (error: any) {
+      console.error('❌ Error searching payment in MercadoPago:', error)
+      return NextResponse.json({ 
+        status: 'error searching payment',
+        payment_id: paymentId,
+        error: error.message,
+        timestamp: new Date().toISOString()
+      }, { status: 200 }) // Return 200 to avoid retries
+    }
+
+    if (!paymentInfo) {
+      console.log(`❌ Payment not found: ${paymentId}`)
+      return NextResponse.json({ 
+        status: 'payment not found', 
+        payment_id: paymentId,
+        timestamp: new Date().toISOString()
+      }, { status: 200 })
+    }
+
+    console.log(`💰 Payment found:`)
+    console.log(`   - ID: ${paymentInfo.id}`)
+    console.log(`   - Status: ${paymentInfo.status}`)
+    console.log(`   - Amount: $${paymentInfo.amount}`)
+    console.log(`   - External Reference: ${paymentInfo.external_reference}`)
+
+    // Solo procesar pagos aprobados
+    if (paymentInfo.status !== 'approved') {
+      console.log(`⏳ Payment ${paymentId} status: ${paymentInfo.status} (not approved yet)`)
+      return NextResponse.json({ 
+        status: 'payment not approved yet',
+        payment_id: paymentId,
+        payment_status: paymentInfo.status,
+        timestamp: new Date().toISOString()
+      }, { status: 200 })
+    }
+
+    // Procesar pago aprobado
+    console.log(`✅ Payment approved: ${paymentId}`)
+    const result = await processApprovedPayment(paymentInfo)
+    
+    return NextResponse.json({ 
+      status: 'success',
+      payment_id: paymentId,
+      result: result,
+      timestamp: new Date().toISOString()
+    }, { status: 200 })
+
+  } catch (error: any) {
+    console.error('💥 Critical error processing MercadoPago webhook:', error)
+    console.error('Error stack:', error.stack)
+    
+    return NextResponse.json({ 
+      error: 'Internal server error',
+      message: error.message,
+      timestamp: new Date().toISOString()
+    }, { status: 200 }) // Return 200 to avoid retries
+  }
+}
+
+// Función para procesar pago aprobado
+async function processApprovedPayment(paymentInfo: any): Promise<any> {
+  console.log(`🔄 Processing approved payment: ${paymentInfo.id}`)
+  
+  const customerPhone = paymentInfo.external_reference
+  
+  if (!customerPhone) {
+    console.log(`❌ No external_reference found in payment`)
+    return { status: 'no external reference' }
+  }
+
+  try {
+    // Buscar contexto de conversación para este teléfono
+    console.log(`🔍 Searching conversation context for phone: ${customerPhone}`)
+    const { data: contexts } = await supabase
+      .from('conversation_context')
+      .select('*')
+      .eq('customer_phone', customerPhone)
+      .order('created_at', { ascending: false })
+      .limit(5)
+
+    console.log(`📊 Found ${contexts?.length || 0} pending reservations for phone ${customerPhone}`)
+
+    if (contexts && contexts.length > 0) {
+      const matchingContext = contexts[0] // Tomar la más reciente
+
+      console.log(`🎯 Processing reservation for:`)
+      console.log(`   - Customer: ${matchingContext.customer_name}`)
+      console.log(`   - Phone: ${matchingContext.customer_phone}`)
+      console.log(`   - Day: ${matchingContext.reservation_day}`)
+      console.log(`   - People: ${matchingContext.reservation_people}`)
+
+      // Obtener información del negocio
+      const { data: businessInfo } = await supabase
+        .from('businesses')
+        .select('*')
+        .eq('id', matchingContext.business_id)
+        .single()
+
+      if (businessInfo) {
+        console.log(`🏢 Business info found: ${businessInfo.name}`)
+        
+        // Guardar la reserva
+        const reservationResult = await saveReservation(matchingContext, paymentInfo, businessInfo)
+        
+        if (reservationResult.success) {
+          // Enviar confirmación por WhatsApp
+          await sendWhatsAppConfirmation(matchingContext, paymentInfo, businessInfo)
+          
+          return {
+            status: 'reservation_confirmed',
+            reservation_id: reservationResult.reservation_id,
+            customer: customerPhone
+          }
+        }
+      }
+    }
+
+    return { status: 'no matching reservation found' }
+
+  } catch (error: any) {
+    console.error('❌ Error processing approved payment:', error)
+    return { status: 'error', message: error.message }
+  }
+}
+
+// Función para guardar reserva
+async function saveReservation(context: any, paymentInfo: any, businessInfo: any): Promise<any> {
+  try {
+    console.log(`💾 Saving reservation to database...`)
+    
+    // Preparar fecha de reserva
+    let reservationDate = new Date().toISOString()
+    if (context.reservation_day && context.reservation_time) {
+      const dayMap: { [key: string]: number } = {
+        'lunes': 1, 'martes': 2, 'miércoles': 3, 'jueves': 4, 'viernes': 5, 'sábado': 6, 'domingo': 0
+      }
+      const today = new Date()
+      const targetDay = dayMap[context.reservation_day.toLowerCase()]
+      if (targetDay !== undefined) {
+        const daysUntilTarget = (targetDay - today.getDay() + 7) % 7 || 7
+        const targetDate = new Date(today.getTime() + daysUntilTarget * 24 * 60 * 60 * 1000)
+        const [hours, minutes] = (context.reservation_time || '20:00').split(':')
+        targetDate.setHours(parseInt(hours) || 20, parseInt(minutes) || 0, 0, 0)
+        reservationDate = targetDate.toISOString()
+      }
+    }
+
+    const { data: reservation, error } = await supabase
+      .from('reservations')
+      .insert({
+        business_id: context.business_id,
+        phone: context.customer_phone,
+        customer_name: context.customer_name || 'Cliente',
+        reservation_date: reservationDate,
+        reservation_type: context.reservation_type || 'cena',
+        party_size: context.reservation_people || 1,
+        status: 'confirmed',
+        deposit_paid: true,
+        deposit_method: 'mercadopago',
+        deposit_amount: paymentInfo.amount,
+        created_at: new Date().toISOString()
+      })
+      .select()
+      .single()
+
+    if (error) {
+      console.error(`❌ Error saving reservation:`, error)
+      return { success: false, error: error }
+    }
+
+    console.log(`✅ Reservation saved: ${reservation.id}`)
+
+    // Limpiar contexto
+    await supabase
+      .from('conversation_context')
+      .delete()
+      .eq('id', context.id)
+
+    console.log(`🧹 Context cleaned`)
+
+    return { success: true, reservation_id: reservation.id }
+
+  } catch (error) {
+    console.error('❌ Error in saveReservation:', error)
+    return { success: false, error: error }
+  }
+}
+
+// Función para enviar confirmación por WhatsApp
+async function sendWhatsAppConfirmation(context: any, paymentInfo: any, businessInfo: any): Promise<void> {
+  try {
+    const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID!
+    
+    const confirmationMessage = `🎉 **¡PAGO RECIBIDO!** 🎉
+
+✅ **RESERVA CONFIRMADA AUTOMÁTICAMENTE** ✅
+
+📅 **${context.reservation_day?.toUpperCase()}** ${context.reservation_time ? `a las ${context.reservation_time}` : ''}
+👥 **${context.reservation_people} personas**
+🍽️ **Para ${context.reservation_type || 'cena'}**
+
+💳 **Pago #${paymentInfo.id}**
+💰 **Monto: $${paymentInfo.amount}**
+📱 **A nombre de: ${context.customer_name}**
+
+¡Tu pago fue detectado automáticamente! 
+Te esperamos en ${businessInfo.name}. 🍻
+
+¡Gracias por elegirnos! 🙌`
+
+    console.log(`📱 Sending WhatsApp confirmation to: ${context.customer_phone}`)
+    
+    await whatsappService.sendTextMessage(phoneNumberId, context.customer_phone, confirmationMessage)
+    console.log(`✅ WhatsApp confirmation sent successfully`)
+
+  } catch (error) {
+    console.error('❌ Error sending WhatsApp confirmation:', error)
+  }
+}
