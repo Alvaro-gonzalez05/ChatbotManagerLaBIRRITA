@@ -17,8 +17,13 @@ const whatsappService = new WhatsAppService()
 export async function GET(request: NextRequest) {
   console.log('🔍 GET request received on MercadoPago webhook')
   
+  const url = new URL(request.url)
+  const searchParams = url.searchParams
+  
+  // Log all query parameters for debugging
+  console.log('🔍 GET parameters:', Object.fromEntries(searchParams.entries()))
+  
   // MercadoPago puede enviar un challenge para verificar el webhook
-  const searchParams = request.nextUrl.searchParams
   const challenge = searchParams.get('challenge')
   
   if (challenge) {
@@ -26,7 +31,36 @@ export async function GET(request: NextRequest) {
     return new NextResponse(challenge)
   }
   
-  // Si no hay challenge, mostrar status
+  // Check if this is a payment success callback (sometimes MP sends via GET)
+  const paymentId = searchParams.get('payment_id') || searchParams.get('collection_id')
+  const status = searchParams.get('status')
+  const externalRef = searchParams.get('external_reference')
+  
+  if (paymentId && status === 'approved' && externalRef) {
+    console.log('💳 Payment success detected via GET callback:')
+    console.log(`   - Payment ID: ${paymentId}`)
+    console.log(`   - Status: ${status}`)
+    console.log(`   - External Reference: ${externalRef}`)
+    
+    // Process this payment like a webhook
+    try {
+      const paymentInfo = await mercadoPagoService.buscarPagoPorId(paymentId)
+      if (paymentInfo && paymentInfo.status === 'approved') {
+        console.log('✅ Processing payment from GET callback')
+        const result = await processApprovedPayment(paymentInfo)
+        return NextResponse.json({ 
+          status: 'payment processed via GET',
+          payment_id: paymentId,
+          result: result,
+          timestamp: new Date().toISOString()
+        })
+      }
+    } catch (error) {
+      console.error('❌ Error processing GET payment callback:', error)
+    }
+  }
+  
+  // Si no hay challenge ni payment callback, mostrar status
   return NextResponse.json({ 
     status: 'MercadoPago webhook endpoint active',
     timestamp: new Date().toISOString(),
@@ -131,9 +165,15 @@ export async function POST(request: NextRequest) {
     }
 
     console.log(`💳 Processing payment notification: ${paymentId}`)
+    console.log(`🔍 Payment details:`)
+    console.log(`   - Live mode: ${webhookData.live_mode}`)
+    console.log(`   - Payment ID: ${paymentId}`)
+    console.log(`   - Action: ${webhookData.action}`)
+    console.log(`   - Type: ${webhookData.type}`)
 
-    // Para pagos de prueba, simular respuesta exitosa
-    if (!webhookData.live_mode || paymentId === '123456') {
+    // Solo considerar como prueba si es el ID específico de prueba de MP Dashboard (123456)
+    // O si está marcado explícitamente como test
+    if (paymentId === '123456' || (webhookData.live_mode === false && paymentId.length < 8)) {
       console.log('🧪 Test payment detected, returning success')
       return NextResponse.json({ 
         status: 'test payment processed',
@@ -141,6 +181,8 @@ export async function POST(request: NextRequest) {
         timestamp: new Date().toISOString()
       }, { status: 200 })
     }
+
+    console.log(`💰 Processing REAL payment: ${paymentId}`)
 
     // Buscar el pago en MercadoPago
     let paymentInfo
