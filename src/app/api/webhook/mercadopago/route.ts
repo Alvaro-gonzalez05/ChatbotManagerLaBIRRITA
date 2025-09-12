@@ -15,7 +15,9 @@ const whatsappService = new WhatsAppService()
 
 // MercadoPago webhook verification (GET method for challenge verification)
 export async function GET(request: NextRequest) {
-  console.log('🔍 GET request received on MercadoPago webhook')
+  console.log('� GET REQUEST ON MERCADOPAGO WEBHOOK 🚨')
+  console.log('🔗 Full URL:', request.url)
+  console.log('👤 User-Agent:', request.headers.get('user-agent'))
   
   const url = new URL(request.url)
   const searchParams = url.searchParams
@@ -70,8 +72,11 @@ export async function GET(request: NextRequest) {
 
 // MercadoPago webhook to receive payment notifications (POST method)
 export async function POST(request: NextRequest) {
-  console.log('📱 POST request received on MercadoPago webhook')
+  console.log('�🚨🚨 POST REQUEST RECEIVED ON MERCADOPAGO WEBHOOK 🚨🚨🚨')
   console.log('📅 Timestamp:', new Date().toISOString())
+  console.log('🌍 URL:', request.url)
+  console.log('🔗 Origin:', request.headers.get('origin'))
+  console.log('👤 User-Agent:', request.headers.get('user-agent'))
   
   try {
     // Obtener el cuerpo de la request como texto para logging
