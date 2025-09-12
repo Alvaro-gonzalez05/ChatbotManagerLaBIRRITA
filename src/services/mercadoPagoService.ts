@@ -167,30 +167,113 @@ export class MercadoPagoService {
   }
 
   /**
-   * Crear link de pago con MercadoPago
+   * Crear link de pago con MercadoPago (Compliant con requerimientos de MP)
    */
-  async crearLinkDePago(monto: number, descripcion: string, referencia: string): Promise<string> {
+  async crearLinkDePago(
+    monto: number, 
+    descripcion: string, 
+    referencia: string,
+    customerInfo?: {
+      name?: string
+      lastName?: string
+      email?: string
+      phone?: string
+      identification?: {
+        type: string
+        number: string
+      }
+    }
+  ): Promise<string> {
     try {
       console.log(`🔗 Creando link de pago: $${monto} - ${descripcion}`)
       
+      // Parsear nombre y apellido si viene en customerInfo.name
+      let firstName = customerInfo?.name || 'Cliente'
+      let lastName = customerInfo?.lastName || 'Reserva'
+      
+      if (customerInfo?.name && !customerInfo?.lastName) {
+        const nameParts = customerInfo.name.trim().split(' ')
+        if (nameParts.length > 1) {
+          firstName = nameParts[0]
+          lastName = nameParts.slice(1).join(' ')
+        }
+      }
+
       const preferenceRequest = {
         items: [
           {
             id: 'seña-reserva',
             title: descripcion,
+            description: `Seña para reserva en La Birrita - ${descripcion}`, // Campo description requerido
+            category_id: 'food', // Campo category_id requerido - categoría para restaurante
             quantity: 1,
             unit_price: monto,
             currency_id: 'ARS'
           }
         ],
+        // Información del pagador (requerido para aprobación)
+        payer: {
+          first_name: firstName, // Campo first_name requerido
+          last_name: lastName,   // Campo last_name requerido
+          email: customerInfo?.email || `${referencia}@labirrita.com.ar`,
+          phone: {
+            area_code: '54',
+            number: customerInfo?.phone || referencia
+          },
+          identification: customerInfo?.identification || {
+            type: 'DNI',
+            number: '00000000'
+          },
+          address: {
+            street_name: 'Av. Principal',
+            street_number: '123',
+            zip_code: '1000'
+          }
+        },
+        // Referencias
         external_reference: referencia,
-        notification_url: `${process.env.NEXTAUTH_URL}/api/webhook/mercadopago`
+        
+        // URLs de callback mejoradas
+        back_urls: {
+          success: `${process.env.NEXTAUTH_URL || process.env.NEXT_PUBLIC_BASE_URL}/dashboard/reservations?payment=success`,
+          failure: `${process.env.NEXTAUTH_URL || process.env.NEXT_PUBLIC_BASE_URL}/dashboard/reservations?payment=failure`,
+          pending: `${process.env.NEXTAUTH_URL || process.env.NEXT_PUBLIC_BASE_URL}/dashboard/reservations?payment=pending`
+        },
+        auto_return: 'approved',
+        
+        // URL de notificación webhook
+        notification_url: `${process.env.NEXTAUTH_URL || process.env.NEXT_PUBLIC_BASE_URL}/api/webhook/mercadopago`,
+        
+        // Configuración adicional para seguridad
+        payment_methods: {
+          excluded_payment_methods: [],
+          excluded_payment_types: [],
+          installments: 1 // Solo pagos en 1 cuota para seña
+        },
+        
+        // Metadatos adicionales para tracking
+        metadata: {
+          customer_phone: referencia,
+          reservation_type: 'seña',
+          business_name: 'La Birrita'
+        },
+        
+        // Configuración de experiencia
+        additional_info: `Reserva en La Birrita - ${descripcion}`,
+        
+        // Fecha de expiración (opcional)
+        expires: true,
+        expiration_date_from: new Date().toISOString(),
+        expiration_date_to: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() // 24 horas
       }
+      
+      console.log('📋 Preference request:', JSON.stringify(preferenceRequest, null, 2))
       
       const preferenceResponse = await preference.create({ body: preferenceRequest })
       
       if (preferenceResponse.init_point) {
         console.log(`✅ Link de pago creado: ${preferenceResponse.init_point}`)
+        console.log(`🆔 Preference ID: ${preferenceResponse.id}`)
         return preferenceResponse.init_point
       } else {
         throw new Error('No se pudo obtener el link de pago')
@@ -198,6 +281,7 @@ export class MercadoPagoService {
       
     } catch (error: any) {
       console.error('Error creando link de pago:', error)
+      console.error('Error details:', error.response?.data || error.message)
       throw error
     }
   }

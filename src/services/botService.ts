@@ -639,7 +639,16 @@ Para confirmarla solo me falta tu nombre. ¿Cómo te llamás?`
           const linkPago = await mercadoPagoService.crearLinkDePago(
             montoSeña,
             `Seña reserva - ${name} - ${day} ${time} - ${people} personas`,
-            customerNumber
+            customerNumber,
+            {
+              name: name,
+              email: `${customerNumber}@labirrita.com.ar`,
+              phone: customerNumber,
+              identification: {
+                type: 'DNI',
+                number: '00000000' // En un caso real, podrías pedirle el DNI al cliente
+              }
+            }
           )
           
           return `¡Bárbaro ${name}! Tengo todos los datos de tu reserva:
@@ -650,7 +659,7 @@ Para confirmarla solo me falta tu nombre. ¿Cómo te llamás?`
 
 ⚠️ **IMPORTANTE - LEÉ ESTAS CONDICIONES:**
 
-⚠️ Si queres asegurar tu lugar, será obligatorio abonar una seña.
+⚠️ Si querés asegurar tu lugar, será obligatorio abonar una seña.
 ⚠️ Tolerancia de reserva hasta las 22hs, luego, se pierde el lugar (SIN EXCEPCIÓN)
 ⚠️ Menores de 18 años pueden permanecer en el bar hasta 1am.
 
@@ -659,7 +668,9 @@ Para confirmarla solo me falta tu nombre. ¿Cómo te llamás?`
 🔗 **PAGÁ TU SEÑA AQUÍ:**
 ${linkPago}
 
-Una vez que completes el pago, se confirma tu reserva automáticamente! ✅`
+Una vez que completes el pago, se confirma tu reserva automáticamente! ✅
+
+¿Tenés alguna pregunta sobre el pago o la reserva?`
         } catch (error) {
           console.error('Error generando link de pago:', error)
           return `¡Bárbaro ${name}! Tengo todos los datos de tu reserva:
