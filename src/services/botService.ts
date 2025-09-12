@@ -57,15 +57,24 @@ export class BotService {
 
   async processMessage(messageText: string, customerNumber: string, businessId: string, customerName?: string, transferNumber?: string | null): Promise<string> {
     try {
+      console.log('🔵 Getting bot personality and business info...')
+      
       // Get bot personality and business info
       const [botPersonality, businessInfo] = await Promise.all([
         this.getBotPersonality(businessId),
         this.getBusinessInfo(businessId)
       ])
 
+      console.log('🔵 Bot personality obtained:', !!botPersonality)
+      console.log('🔵 Business info obtained:', !!businessInfo)
+      
       if (!botPersonality || !businessInfo) {
+        console.log('❌ Missing bot personality or business info')
         return 'Lo siento, el servicio no está disponible en este momento.'
       }
+
+      console.log('🔵 Bot processing completed successfully')
+      console.log('🔵 Business name:', businessInfo.name)
 
       // Durante las pruebas, siempre responder normalmente
       // TODO: Descomentar cuando quieras activar horarios

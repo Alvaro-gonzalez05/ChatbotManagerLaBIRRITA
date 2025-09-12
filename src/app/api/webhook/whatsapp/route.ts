@@ -14,23 +14,24 @@ const botService = new BotService()
 const whatsappService = new WhatsAppService()
 const mercadoPagoService = new MercadoPagoService()
 
-// Sistema de debounce para mensajes
+// Sistema de debounce para mensajes - Opción 3: Simple Delay con Promise
 interface PendingMessage {
-  customerNumber: string
-  businessId: string
-  phoneNumberId: string
   messages: Array<{
-    text: string
-    customerName: string
-    messageId: string
-    timestamp: number
+    messageText: string
+    customerName?: string
     transferNumber?: string | null
+    timestamp: number
+    messageId: string
   }>
-  timeoutId: NodeJS.Timeout
+  processing: boolean
+  lastUpdate: number
+  phoneNumberId: string
+  businessId: string
 }
 
+// Global storage para debouncing (funciona en Vercel durante la ejecución)
 const pendingMessages = new Map<string, PendingMessage>()
-const DEBOUNCE_TIME = 10000 // 10 segundos de espera
+const DEBOUNCE_TIME = 3000 // 3 segundos sin mensajes nuevos
 
 // WhatsApp Business API webhook verification
 export async function GET(request: NextRequest) {
@@ -121,9 +122,19 @@ export async function POST(request: NextRequest) {
               }
             }
 
-            // **USAR SISTEMA DE DEBOUNCE PARA AGRUPAR MENSAJES**
+            // **PROCESAR MENSAJE CON DEBOUNCE (OPCIÓN 3)**
             const displayText = messageText.trim() || '[Mensaje vacío]'
-            await addMessageToQueue(customerNumber, businessId, phoneNumberId, displayText, customerName || 'Cliente', message.id, transferNumber)
+            
+            console.log(`� Adding message to debounce queue: "${displayText}"`)
+            await addMessageWithDebounce(
+              displayText,
+              customerNumber,
+              businessId,
+              phoneNumberId,
+              customerName || 'Cliente',
+              transferNumber,
+              message.id
+            )
 
           } catch (error) {
             console.error('Error processing message:', error)
@@ -822,121 +833,142 @@ function detectarNumeroTransferencia(messageText: string): string | null {
   return null
 }
 
-// Función para agregar mensaje a la cola de debounce
-async function addMessageToQueue(
-  customerNumber: string, 
-  businessId: string, 
-  phoneNumberId: string, 
-  messageText: string, 
-  customerName: string, 
-  messageId: string, 
-  transferNumber?: string | null
-) {
-  const key = `${customerNumber}_${businessId}`
+// Función de debounce con Promise - Opción 3
+async function addMessageWithDebounce(
+  messageText: string,
+  customerNumber: string,
+  businessId: string,
+  phoneNumberId: string,
+  customerName?: string,
+  transferNumber?: string | null,
+  messageId?: string
+): Promise<void> {
+  const key = `${customerNumber}:${businessId}`
   
-  // Si ya existe una cola para este cliente, cancelar el timeout anterior
-  if (pendingMessages.has(key)) {
-    const existing = pendingMessages.get(key)!
-    clearTimeout(existing.timeoutId)
-    
-    // Agregar el nuevo mensaje a la cola existente
-    existing.messages.push({
-      text: messageText,
-      customerName,
-      messageId,
-      timestamp: Date.now(),
-      transferNumber
-    })
-    
-    console.log(`📬 Added message to existing queue for ${customerNumber}: "${messageText}" (${existing.messages.length} total messages)`)
-  } else {
-    // Crear nueva cola para este cliente
+  console.log(`📬 Adding message to debounce queue for ${customerNumber}: "${messageText}"`)
+  
+  if (!pendingMessages.has(key)) {
     pendingMessages.set(key, {
-      customerNumber,
-      businessId,
+      messages: [],
+      processing: false,
+      lastUpdate: Date.now(),
       phoneNumberId,
-      messages: [{
-        text: messageText,
-        customerName,
-        messageId,
-        timestamp: Date.now(),
-        transferNumber
-      }],
-      timeoutId: null as any // Se asignará abajo
+      businessId
     })
-    
-    console.log(`📬 Created new message queue for ${customerNumber}: "${messageText}"`)
+    console.log(`📬 Created new debounce queue for ${customerNumber}`)
   }
   
-  // Crear nuevo timeout para procesar los mensajes
-  const timeoutId = setTimeout(async () => {
-    await processMessageQueue(key)
-  }, DEBOUNCE_TIME)
+  const entry = pendingMessages.get(key)!
+  entry.messages.push({ 
+    messageText, 
+    customerName, 
+    transferNumber,
+    timestamp: Date.now(),
+    messageId: messageId || `${Date.now()}`
+  })
+  entry.lastUpdate = Date.now()
   
-  // Actualizar el timeout en la cola
-  pendingMessages.get(key)!.timeoutId = timeoutId
+  console.log(`📬 Queue now has ${entry.messages.length} messages for ${customerNumber}`)
+  
+  // If not already processing, start debounce
+  if (!entry.processing) {
+    entry.processing = true
+    console.log(`🔄 Starting debounce process for ${customerNumber}`)
+    
+    // Wait for DEBOUNCE_TIME seconds of inactivity
+    await new Promise<void>(resolve => {
+      const checkForNewMessages = () => {
+        const timeSinceLastUpdate = Date.now() - entry.lastUpdate
+        
+        if (timeSinceLastUpdate >= DEBOUNCE_TIME) {
+          console.log(`⏰ Debounce completed for ${customerNumber} - processing ${entry.messages.length} messages`)
+          resolve()
+        } else {
+          console.log(`⏳ Still receiving messages for ${customerNumber}, waiting...`)
+          setTimeout(checkForNewMessages, 1000)
+        }
+      }
+      
+      setTimeout(checkForNewMessages, DEBOUNCE_TIME)
+    })
+    
+    // Process all accumulated messages
+    await processAccumulatedMessages(key, customerNumber, businessId, phoneNumberId)
+  } else {
+    console.log(`🔄 Already processing for ${customerNumber}, message added to queue`)
+  }
 }
 
-// Función para procesar la cola de mensajes agrupados
-async function processMessageQueue(key: string) {
-  const messageQueue = pendingMessages.get(key)
-  if (!messageQueue) return
+async function processAccumulatedMessages(
+  key: string, 
+  customerNumber: string, 
+  businessId: string,
+  phoneNumberId: string
+): Promise<void> {
+  const entry = pendingMessages.get(key)
+  if (!entry || entry.messages.length === 0) {
+    console.log(`⚠️ No messages to process for ${customerNumber}`)
+    return
+  }
   
-  // Remover de la cola de pendientes
+  const messages = [...entry.messages]
   pendingMessages.delete(key)
   
-  const { customerNumber, businessId, phoneNumberId, messages } = messageQueue
+  console.log(`🤖 Processing ${messages.length} accumulated messages for ${customerNumber}`)
   
   try {
-    console.log(`🔄 Processing message queue for ${customerNumber} with ${messages.length} messages:`)
-    messages.forEach((msg, i) => {
-      console.log(`   ${i + 1}. "${msg.text}" (${msg.customerName})`)
-    })
+    // Combine messages intelligently
+    let combinedMessage = messages.map(m => m.messageText).join(' ')
+    let finalCustomerName = messages.find(m => m.customerName && m.customerName !== 'Cliente')?.customerName
+    let finalTransferNumber = messages.find(m => m.transferNumber)?.transferNumber || null
     
-    // Combinar todos los mensajes de manera inteligente
-    const combinedText = messages.map(m => m.text).join('. ')
-    const latestCustomerName = messages[messages.length - 1].customerName
-    const hasTransferNumber = messages.some(m => m.transferNumber)
-    const transferNumber = messages.find(m => m.transferNumber)?.transferNumber
+    console.log(`� Processing combined message from ${customerNumber}: "${combinedMessage}"`)
+    console.log(`🏢 Business ID: ${businessId}`)
+    console.log(`📱 Phone Number ID: ${phoneNumberId}`)
+    console.log(`👤 Final Customer Name: ${finalCustomerName || 'Cliente'}`)
+    console.log(`💳 Final Transfer Number: ${finalTransferNumber || 'None'}`)
     
-    console.log(`📝 Combined message: "${combinedText}"`)
-    console.log(`📊 Message details: ${messages.length} messages from ${customerNumber}`)
-    console.log(`🔍 Transfer Number Debug:`)
-    console.log(`   - hasTransferNumber: ${hasTransferNumber}`)
-    console.log(`   - transferNumber:`, transferNumber)
-    messages.forEach((msg, i) => {
-      console.log(`   - Message ${i + 1} transferNumber:`, msg.transferNumber)
-    })
-    
-    // Procesar con el bot service
+    // Process the combined message with botService
+    console.log('📞 Calling botService.processMessage...')
     const botResponse = await botService.processMessage(
-      combinedText,
-      customerNumber,
-      businessId,
-      latestCustomerName,
-      transferNumber
+      combinedMessage, 
+      customerNumber, 
+      businessId, 
+      finalCustomerName || 'Cliente',
+      finalTransferNumber
     )
-
-    console.log(`🤖 Bot response: "${botResponse}"`)
-
-    // Enviar respuesta
-    if (botResponse && botResponse.trim()) {
-      await whatsappService.sendTextMessage(phoneNumberId, customerNumber, botResponse)
-      console.log(`📤 Response sent to ${customerNumber}`)
-    }
-
-  } catch (error) {
-    console.error('Error processing message queue:', error)
     
-    // Enviar mensaje de error
+    console.log(`🤖 Bot response received: "${botResponse}"`)
+    
+    // Send response
+    if (botResponse && botResponse.trim()) {
+      console.log('📤 Sending response via WhatsApp...')
+      const sendResult = await whatsappService.sendTextMessage(phoneNumberId, customerNumber, botResponse)
+      console.log(`✅ Response sent successfully:`, sendResult)
+      console.log(`📤 Final confirmation: Response sent to ${customerNumber}`)
+    } else {
+      console.log(`⚠️ No response from bot for combined message: "${combinedMessage}"`)
+    }
+    
+  } catch (error) {
+    console.error(`❌ Error processing accumulated messages for ${customerNumber}:`, error)
+    console.error('Error details:', {
+      message: error.message,
+      stack: error.stack,
+      name: error.name
+    })
+    
+    // Fallback response
     try {
+      console.log('🔄 Sending fallback error message...')
       await whatsappService.sendTextMessage(
-        phoneNumberId,
-        customerNumber,
-        'Disculpa, hubo un error procesando tu mensaje. Por favor intenta nuevamente.'
+        phoneNumberId, 
+        customerNumber, 
+        'Disculpa, ocurrió un error procesando tu mensaje. Por favor intenta nuevamente.'
       )
+      console.log('✅ Fallback message sent')
     } catch (fallbackError) {
-      console.error('Error sending fallback message:', fallbackError)
+      console.error('❌ Error sending fallback message:', fallbackError)
     }
   }
 }
