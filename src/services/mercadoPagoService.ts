@@ -233,13 +233,12 @@ export class MercadoPagoService {
         // Referencias
         external_reference: referencia,
         
-        // URLs de callback mejoradas
+        // URLs de callback - usando back_urls sin auto_return para evitar conflictos
         back_urls: {
           success: `${process.env.NEXTAUTH_URL || process.env.NEXT_PUBLIC_BASE_URL}/dashboard/reservations?payment=success`,
           failure: `${process.env.NEXTAUTH_URL || process.env.NEXT_PUBLIC_BASE_URL}/dashboard/reservations?payment=failure`,
           pending: `${process.env.NEXTAUTH_URL || process.env.NEXT_PUBLIC_BASE_URL}/dashboard/reservations?payment=pending`
         },
-        auto_return: 'approved',
         
         // URL de notificación webhook
         notification_url: `${process.env.NEXTAUTH_URL || process.env.NEXT_PUBLIC_BASE_URL}/api/webhook/mercadopago`,

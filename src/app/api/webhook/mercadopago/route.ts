@@ -319,6 +319,81 @@ async function processApprovedPayment(paymentInfo: any): Promise<any> {
   }
 }
 
+// Funciones auxiliares para parseo de fechas
+function parseSpecificDate(dayString: string, today: Date): Date {
+  const monthNames: { [key: string]: number } = {
+    'enero': 0, 'febrero': 1, 'marzo': 2, 'abril': 3,
+    'mayo': 4, 'junio': 5, 'julio': 6, 'agosto': 7,
+    'septiembre': 8, 'octubre': 9, 'noviembre': 10, 'diciembre': 11
+  }
+  
+  // Patrón para "15 de septiembre", "para el 20 de octubre", etc.
+  const match = dayString.match(/(?:para el )?(\d{1,2})\s+de\s+([a-záéíóúñ]+)/)
+  if (match) {
+    const day = parseInt(match[1])
+    const monthName = match[2].toLowerCase()
+    const monthIndex = monthNames[monthName]
+    
+    if (monthIndex !== undefined && day >= 1 && day <= 31) {
+      const currentYear = today.getFullYear()
+      const targetDate = new Date(currentYear, monthIndex, day)
+      
+      // Si la fecha ya pasó este año, usar el próximo año
+      if (targetDate < today) {
+        targetDate.setFullYear(currentYear + 1)
+      }
+      
+      console.log(`📅 Parsed specific date: ${dayString} -> ${targetDate.toDateString()}`)
+      return targetDate
+    }
+  }
+  
+  // Si no se puede parsear, retornar mañana por defecto
+  console.log(`⚠️ Could not parse specific date: ${dayString}, using tomorrow`)
+  return new Date(today.getTime() + 24 * 60 * 60 * 1000)
+}
+
+function parseNumericDate(dayString: string, today: Date): Date {
+  // Patrones para "15/09", "15-09", "15/09/25", etc.
+  const patterns = [
+    /(\d{1,2})[\/\-](\d{1,2})$/, // DD/MM o DD-MM
+    /(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/ // DD/MM/YY o DD/MM/YYYY
+  ]
+  
+  for (const pattern of patterns) {
+    const match = dayString.match(pattern)
+    if (match) {
+      const day = parseInt(match[1])
+      const month = parseInt(match[2]) - 1 // Months are 0-indexed
+      let year = today.getFullYear()
+      
+      if (match[3]) {
+        year = parseInt(match[3])
+        // Si el año es de 2 dígitos, asumir 20XX
+        if (year < 100) {
+          year = 2000 + year
+        }
+      }
+      
+      if (day >= 1 && day <= 31 && month >= 0 && month <= 11) {
+        const targetDate = new Date(year, month, day)
+        
+        // Si no se especificó año y la fecha ya pasó, usar el próximo año
+        if (!match[3] && targetDate < today) {
+          targetDate.setFullYear(year + 1)
+        }
+        
+        console.log(`📅 Parsed numeric date: ${dayString} -> ${targetDate.toDateString()}`)
+        return targetDate
+      }
+    }
+  }
+  
+  // Si no se puede parsear, retornar mañana por defecto
+  console.log(`⚠️ Could not parse numeric date: ${dayString}, using tomorrow`)
+  return new Date(today.getTime() + 24 * 60 * 60 * 1000)
+}
+
 // Función para guardar reserva
 async function saveReservation(context: any, paymentInfo: any, businessInfo: any): Promise<any> {
   try {
@@ -330,15 +405,43 @@ async function saveReservation(context: any, paymentInfo: any, businessInfo: any
       const dayMap: { [key: string]: number } = {
         'lunes': 1, 'martes': 2, 'miércoles': 3, 'jueves': 4, 'viernes': 5, 'sábado': 6, 'domingo': 0
       }
+      
       const today = new Date()
-      const targetDay = dayMap[context.reservation_day.toLowerCase()]
-      if (targetDay !== undefined) {
-        const daysUntilTarget = (targetDay - today.getDay() + 7) % 7 || 7
-        const targetDate = new Date(today.getTime() + daysUntilTarget * 24 * 60 * 60 * 1000)
-        const [hours, minutes] = (context.reservation_time || '20:00').split(':')
-        targetDate.setHours(parseInt(hours) || 20, parseInt(minutes) || 0, 0, 0)
-        reservationDate = targetDate.toISOString()
+      const reservationDay = context.reservation_day.toLowerCase()
+      let targetDate: Date
+      
+      // Manejar casos especiales primero
+      if (reservationDay === 'hoy') {
+        targetDate = new Date(today)
+      } else if (reservationDay === 'mañana') {
+        targetDate = new Date(today.getTime() + 24 * 60 * 60 * 1000) // +1 día
+      } else if (reservationDay === 'pasado mañana') {
+        targetDate = new Date(today.getTime() + 2 * 24 * 60 * 60 * 1000) // +2 días
+      } else if (reservationDay.includes(' de ')) {
+        // Manejar fechas específicas como "15 de septiembre", "20 de octubre"
+        targetDate = parseSpecificDate(reservationDay, today)
+      } else if (reservationDay.includes('/') || reservationDay.includes('-')) {
+        // Manejar fechas numéricas como "15/09", "20-10"
+        targetDate = parseNumericDate(reservationDay, today)
+      } else {
+        // Para días específicos de la semana
+        const targetDay = dayMap[reservationDay]
+        if (targetDay !== undefined) {
+          const daysUntilTarget = (targetDay - today.getDay() + 7) % 7 || 7
+          targetDate = new Date(today.getTime() + daysUntilTarget * 24 * 60 * 60 * 1000)
+        } else {
+          // Si no se puede interpretar el día, usar mañana por defecto
+          console.log(`⚠️ Unknown day format: ${context.reservation_day}, using tomorrow as default`)
+          targetDate = new Date(today.getTime() + 24 * 60 * 60 * 1000)
+        }
       }
+      
+      // Establecer la hora específica
+      const [hours, minutes] = (context.reservation_time || '21:00').split(':')
+      targetDate.setHours(parseInt(hours) || 21, parseInt(minutes) || 0, 0, 0)
+      reservationDate = targetDate.toISOString()
+      
+      console.log(`📅 Parsed reservation date: ${context.reservation_day} ${context.reservation_time} -> ${reservationDate}`)
     }
 
     const { data: reservation, error } = await supabase
